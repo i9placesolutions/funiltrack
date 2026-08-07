@@ -1143,11 +1143,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     app.get('/', async (_request, reply) => reply.sendFile('index.html'))
     app.setNotFoundHandler((request, reply) => {
-      if (
-        request.method === 'GET' &&
-        !request.url.startsWith('/api/') &&
-        request.headers.accept?.includes('text/html')
-      ) {
+      if (request.method === 'GET' && !request.url.startsWith('/api/')) {
         return reply.sendFile('index.html')
       }
       return jsonError(reply, 404, 'Rota não encontrada.')
