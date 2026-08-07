@@ -22,6 +22,8 @@ const LeadDetailPage = lazy(() => import('./features/leads/LeadDetailPage'))
 const FunnelPage = lazy(() => import('./features/funnel/FunnelPage'))
 const AlertsPage = lazy(() => import('./features/alerts/AlertsPage'))
 const ConfigPage = lazy(() => import('./features/config/ConfigPage'))
+const WhatsAppPage = lazy(() => import('./features/whatsapp/WhatsAppPage'))
+const AuthPage = lazy(() => import('./features/auth/AuthPage'))
 const OnboardingPage = lazy(
   () => import('./features/onboarding/OnboardingPage'),
 )
@@ -56,27 +58,48 @@ function RequireOnboarding() {
   return <Outlet />
 }
 
+function RequireAuth() {
+  const { authStatus } = useApp()
+  if (authStatus === 'loading') {
+    return (
+      <div className="min-h-dvh flex items-center justify-center bg-bg" aria-busy="true">
+        <div className="h-8 w-8 rounded-full border-2 border-primary/25 border-t-primary animate-spin" />
+      </div>
+    )
+  }
+  if (authStatus === 'unauthenticated') return <Navigate to="/login" replace />
+  return <Outlet />
+}
+
 export function AppRoutes() {
   return useRoutes([
     {
-      element: <RequireOnboarding />,
+      element: <RequireAuth />,
       children: [
         {
-          element: <AppShell />,
+          element: <RequireOnboarding />,
           children: [
-            { path: '/', element: withSuspense(DashboardPage) },
-            { path: '/explorar', element: withSuspense(ExplorePage) },
-            { path: '/campanhas/:id', element: withSuspense(CampaignDetailPage) },
-            { path: '/leads', element: withSuspense(LeadsPage) },
-            { path: '/leads/:id', element: withSuspense(LeadDetailPage) },
-            { path: '/funil', element: withSuspense(FunnelPage) },
-            { path: '/alertas', element: withSuspense(AlertsPage) },
-            { path: '/config', element: withSuspense(ConfigPage) },
+            {
+              element: <AppShell />,
+              children: [
+                { path: '/', element: withSuspense(DashboardPage) },
+                { path: '/explorar', element: withSuspense(ExplorePage) },
+                { path: '/campanhas/:id', element: withSuspense(CampaignDetailPage) },
+                { path: '/leads', element: withSuspense(LeadsPage) },
+                { path: '/leads/:id', element: withSuspense(LeadDetailPage) },
+                { path: '/funil', element: withSuspense(FunnelPage) },
+                { path: '/alertas', element: withSuspense(AlertsPage) },
+                { path: '/config', element: withSuspense(ConfigPage) },
+                { path: '/whatsapp', element: withSuspense(WhatsAppPage) },
+              ],
+            },
           ],
         },
+        { path: '/onboarding', element: withSuspense(OnboardingPage) },
       ],
     },
-    { path: '/onboarding', element: withSuspense(OnboardingPage) },
+    { path: '/login', element: withSuspense(AuthPage) },
+    { path: '/register', element: withSuspense(AuthPage) },
     { path: '*', element: <Navigate to="/" replace /> },
   ])
 }

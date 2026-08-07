@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Pool, type PoolClient } from 'pg'
 import type { AppConfig } from './config.js'
@@ -17,16 +17,15 @@ export function createPool(config: AppConfig): Pool {
 }
 
 export async function runMigrations(pool: Pool): Promise<void> {
-  const migrationPath = resolve(
-    process.cwd(),
-    'server',
-    'migrations',
-    '001_initial.sql',
-  )
-  const sql = await readFile(migrationPath, 'utf8')
+  const migrationsDir = resolve(process.cwd(), 'server', 'migrations')
+  const migrationFiles = (await readdir(migrationsDir))
+    .filter((file) => /^\d+_.+\.sql$/.test(file))
+    .sort()
   await pool.query('begin')
   try {
-    await pool.query(sql)
+    for (const migrationFile of migrationFiles) {
+      await pool.query(await readFile(resolve(migrationsDir, migrationFile), 'utf8'))
+    }
     await pool.query('commit')
   } catch (error) {
     await pool.query('rollback')

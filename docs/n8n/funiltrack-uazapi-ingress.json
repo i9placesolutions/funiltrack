@@ -1,0 +1,114 @@
+{
+  "name": "FunilTrack | UazAPI ingress",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "funiltrack/uazapi",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e01",
+      "name": "Receber UazAPI",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 0],
+      "webhookId": "funiltrack-uazapi"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.all()[0]?.json ?? {};\nconst body = input.body && typeof input.body === 'object' ? input.body : input;\nconst query = input.query && typeof input.query === 'object' ? input.query : {};\nconst secret = typeof query.secret === 'string' ? query.secret : '';\nif (!secret) {\n  return [{ json: { valid: false, reason: 'missing_webhook_secret' } }];\n}\nreturn [{ json: { valid: true, secret, payload: body } }];"
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e02",
+      "name": "Validar entrada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "id": "valid-input", "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e03",
+      "name": "Entrada autorizada?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://j30xzsgt5bgou5a4rup6uvh8.147.93.139.212.sslip.io/api/whatsapp/uazapi-webhook?secret=' + encodeURIComponent($json.secret) }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "content-type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": { "timeout": 30000 },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e04",
+      "name": "Entregar ao FunilTrack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [720, -80]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, accepted: true }) }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e05",
+      "name": "Responder OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [960, -160]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'invalid_webhook_secret' }) }}",
+        "options": { "responseCode": 401 }
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e06",
+      "name": "Responder não autorizado",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [720, 120]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'funiltrack_unavailable' }) }}",
+        "options": { "responseCode": 502 }
+      },
+      "id": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1e07",
+      "name": "Responder falha upstream",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [960, 40]
+    }
+  ],
+  "connections": {
+    "Receber UazAPI": { "main": [[{ "node": "Validar entrada", "type": "main", "index": 0 }]] },
+    "Validar entrada": { "main": [[{ "node": "Entrada autorizada?", "type": "main", "index": 0 }]] },
+    "Entrada autorizada?": { "main": [[{ "node": "Entregar ao FunilTrack", "type": "main", "index": 0 }], [{ "node": "Responder não autorizado", "type": "main", "index": 0 }]] },
+    "Entregar ao FunilTrack": { "main": [[{ "node": "Responder OK", "type": "main", "index": 0 }], [{ "node": "Responder falha upstream", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveDataErrorExecution": "all", "saveDataSuccessExecution": "none", "saveManualExecutions": true },
+  "versionId": "f4a1b5c9-2d12-4e86-a0c5-0b2a9d5e1001",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}

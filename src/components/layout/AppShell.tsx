@@ -3,11 +3,12 @@
  * - Mobile: TopBar + conteúdo + bottom navigation
  * - Desktop (lg+): sidebar fixa + área de trabalho larga (console web)
  */
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { BrandLogo } from '../brand/BrandLogo'
 import { useUnreadAlertCount } from '../../features/alerts/useAlerts'
 import { useTheme } from '../../hooks/useTheme'
+import { useApp } from '../../hooks/useApp'
 
 interface NavItem {
   to: string
@@ -66,6 +67,11 @@ const NAV_ITEMS: NavItem[] = [
     icon: icon(
       'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0',
     ),
+  },
+  {
+    to: '/whatsapp',
+    label: 'WhatsApp',
+    icon: icon('M20 11.5a8 8 0 0 1-11.86 7L4 20l1.5-4.14A8 8 0 1 1 20 11.5zM8.5 9.5c.3 2.1 2 3.8 4 4.1l1.2-1.2 1.5.7c.2.1.3.4.2.6-.3.8-1.1 1.3-2 1.1-3.7-.7-5.5-2.5-6.2-5.5-.2-.9.3-1.7 1.1-2 .2-.1.5 0 .6.2l.7 1.5-1.1.5z'),
   },
   {
     to: '/config',
@@ -151,6 +157,13 @@ function DesktopNavLink({ item, unreadAlerts }: { item: NavItem; unreadAlerts: n
 
 export function AppShell() {
   const unreadAlerts = useUnreadAlertCount()
+  const navigate = useNavigate()
+  const { user, logout } = useApp()
+
+  const signOut = async () => {
+    await logout()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <div className="min-h-dvh flex bg-bg">
@@ -172,12 +185,17 @@ export function AppShell() {
           ))}
         </nav>
 
-        <div className="px-4 py-4 border-t border-border/60 flex items-center justify-between gap-3">
+        <div className="px-4 py-4 border-t border-border/60 flex items-center gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-text truncate">Workspace demo</p>
-            <p className="text-[11px] text-text-muted truncate">Ads + WhatsApp</p>
+            <p className="text-xs font-medium text-text truncate">{user?.name ?? 'Workspace'}</p>
+            <p className="text-[11px] text-text-muted truncate">{user?.email ?? 'Ads + WhatsApp'}</p>
           </div>
-          <ThemeToggleButton />
+          <div className="ml-auto flex items-center gap-1">
+            <ThemeToggleButton />
+            <button type="button" onClick={() => void signOut()} className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-text-muted hover:text-danger hover:bg-danger/10" aria-label="Sair">
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M21 4v16" /></svg>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -188,7 +206,12 @@ export function AppShell() {
           <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" aria-hidden="true" />
           <div className="flex items-center justify-between h-14 px-4">
             <BrandMark compact />
-            <ThemeToggleButton />
+            <div className="flex items-center gap-1">
+              <ThemeToggleButton />
+              <button type="button" onClick={() => void signOut()} className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-text-muted hover:text-danger hover:bg-danger/10" aria-label="Sair">
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M21 4v16" /></svg>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -219,7 +242,7 @@ export function AppShell() {
           aria-label="Navegação principal"
         >
           <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary-2/45 to-transparent" aria-hidden="true" />
-          <div className="grid grid-cols-6">
+          <div className="grid grid-cols-7">
             {NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.to}

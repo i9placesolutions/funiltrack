@@ -58,6 +58,28 @@ pnpm preview    # serve o build localmente (PWA ativo só em produção)
 - **Fastify** + **PostgreSQL** (`pg`) + **Redis** (`ioredis`) no backend
 - **Dockerfile** único para frontend/API no Coolify
 
+## Autenticação e WhatsApp UazAPI
+
+O acesso real da aplicação usa cadastro/login, cookie de sessão `httpOnly`,
+expiração configurável, logout e troca de senha. A senha nunca é armazenada em
+texto puro: o backend usa `scrypt` com salt por usuário. O primeiro usuário
+cadastrado recebe o papel `owner`; para impedir novos cadastros depois do
+onboarding, defina `AUTH_ALLOW_REGISTRATION=false` no ambiente do backend.
+
+Na rota **WhatsApp**, o backend chama a UazAPI sem expor o token ao navegador:
+
+- `GET /api/whatsapp/status` consulta a instância e atualiza o QR Code;
+- `POST /api/whatsapp/connect` inicia a conexão sem informar telefone, portanto gera QR Code;
+- `POST /api/whatsapp/configure-webhook` registra mensagens, conexão e histórico;
+- `POST /api/whatsapp/send/text` envia e grava a mensagem na timeline do lead;
+- `POST /api/whatsapp/uazapi-webhook` recebe eventos, deduplica e persiste mensagens.
+
+Configure `UAZAPI_BASE_URL` e `UAZAPI_TOKEN` no Coolify. Para criar uma
+instância pelo próprio painel, use também `UAZAPI_ADMIN_TOKEN` e uma
+`UAZAPI_ENCRYPTION_KEY` com pelo menos 32 caracteres. Para utilizar o n8n como
+ponte, importe os arquivos de `docs/n8n/` e só então preencha
+`N8N_UAZAPI_WEBHOOK_URL`.
+
 ## Estrutura de pastas (resumo)
 
 ```

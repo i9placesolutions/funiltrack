@@ -21,6 +21,17 @@ const envSchema = z.object({
   SEED_DEMO_DATA: booleanFromEnv(false),
   API_TOKEN: z.string().trim().min(1).optional(),
   WEBHOOK_TOKEN: z.string().trim().min(1).optional(),
+  AUTH_ALLOW_REGISTRATION: booleanFromEnv(true),
+  AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(14),
+  AUTH_SECURE_COOKIE: booleanFromEnv(false),
+  APP_PUBLIC_URL: z.string().trim().url().optional(),
+  N8N_UAZAPI_WEBHOOK_URL: z.string().trim().url().optional(),
+  UAZAPI_BASE_URL: z.string().trim().url().default('https://api.uazapi.com'),
+  UAZAPI_TOKEN: z.string().trim().min(1).optional(),
+  UAZAPI_ADMIN_TOKEN: z.string().trim().min(1).optional(),
+  UAZAPI_INSTANCE_NAME: z.string().trim().min(1).max(80).default('funiltrack'),
+  UAZAPI_ENCRYPTION_KEY: z.string().trim().min(32).optional(),
+  UAZAPI_WEBHOOK_SECRET: z.string().trim().min(16).optional(),
   CORS_ORIGIN: z.string().default('*'),
   STATIC_DIR: z.string().default('dist'),
 })
@@ -37,6 +48,17 @@ export interface AppConfig {
   seedDemoData: boolean
   apiToken?: string
   webhookToken?: string
+  authAllowRegistration: boolean
+  authSessionTtlDays: number
+  authSecureCookie: boolean
+  appPublicUrl?: string
+  n8nUazapiWebhookUrl?: string
+  uazapiBaseUrl: string
+  uazapiToken?: string
+  uazapiAdminToken?: string
+  uazapiInstanceName: string
+  uazapiEncryptionKey?: string
+  uazapiWebhookSecret?: string
   corsOrigin: string
   staticDir: string
 }
@@ -65,6 +87,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     seedDemoData: parsed.SEED_DEMO_DATA,
     apiToken: parsed.API_TOKEN,
     webhookToken: parsed.WEBHOOK_TOKEN,
+    authAllowRegistration: parsed.AUTH_ALLOW_REGISTRATION,
+    authSessionTtlDays: parsed.AUTH_SESSION_TTL_DAYS,
+    authSecureCookie: parsed.AUTH_SECURE_COOKIE,
+    appPublicUrl: parsed.APP_PUBLIC_URL,
+    n8nUazapiWebhookUrl: parsed.N8N_UAZAPI_WEBHOOK_URL,
+    uazapiBaseUrl: parsed.UAZAPI_BASE_URL.replace(/\/$/, ''),
+    uazapiToken: parsed.UAZAPI_TOKEN,
+    uazapiAdminToken: parsed.UAZAPI_ADMIN_TOKEN,
+    uazapiInstanceName: parsed.UAZAPI_INSTANCE_NAME,
+    uazapiEncryptionKey: parsed.UAZAPI_ENCRYPTION_KEY,
+    uazapiWebhookSecret: parsed.UAZAPI_WEBHOOK_SECRET,
     corsOrigin: parsed.CORS_ORIGIN,
     staticDir: parsed.STATIC_DIR,
   }

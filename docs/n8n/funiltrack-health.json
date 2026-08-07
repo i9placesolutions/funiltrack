@@ -1,0 +1,69 @@
+{
+  "name": "FunilTrack | Infra health",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "minutes", "minutesInterval": 5 }] } },
+      "id": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1001",
+      "name": "A cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://j30xzsgt5bgou5a4rup6uvh8.147.93.139.212.sslip.io/api/health",
+        "options": { "timeout": 15000 },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000
+      },
+      "id": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1002",
+      "name": "Consultar health do FunilTrack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.all()[0]?.json ?? {};\nconst healthy = data.status === 'ok' && data.database === 'ok' && (data.redis === 'ok' || data.redis === 'disabled');\nreturn [{ json: { healthy, checkedAt: new Date().toISOString(), service: 'funiltrack', database: data.database ?? 'unknown', redis: data.redis ?? 'unknown' } }];"
+      },
+      "id": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1003",
+      "name": "Normalizar diagnóstico",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.all()[0]?.json ?? {};\nif (!item.healthy) console.log(JSON.stringify({ severity: 'critical', message: 'FunilTrack healthcheck degradado', ...item }));\nreturn [{ json: item }];"
+      },
+      "id": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1004",
+      "name": "Registrar diagnóstico",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.all()[0]?.json ?? {};\nconsole.log(JSON.stringify({ severity: 'critical', message: 'FunilTrack healthcheck sem resposta', checkedAt: new Date().toISOString(), error: { name: error.name ?? 'request_error', code: error.code ?? 'unknown' } }));\nreturn [{ json: { healthy: false, service: 'funiltrack', checkedAt: new Date().toISOString() } }];"
+      },
+      "id": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1005",
+      "name": "Registrar falha de rede",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 120]
+    }
+  ],
+  "connections": {
+    "A cada 5 minutos": { "main": [[{ "node": "Consultar health do FunilTrack", "type": "main", "index": 0 }]] },
+    "Consultar health do FunilTrack": { "main": [[{ "node": "Normalizar diagnóstico", "type": "main", "index": 0 }], [{ "node": "Registrar falha de rede", "type": "main", "index": 0 }]] },
+    "Normalizar diagnóstico": { "main": [[{ "node": "Registrar diagnóstico", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveDataErrorExecution": "all", "saveDataSuccessExecution": "none", "saveManualExecutions": true },
+  "versionId": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1006",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}

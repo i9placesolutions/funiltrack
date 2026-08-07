@@ -24,6 +24,7 @@ import { useApp } from '../../hooks/useApp'
 import type { ThemeMode } from '../../context/AppContext'
 import { loadAlertTargets, saveAlertTargets } from '../../lib/alerts/targets'
 import { queryKeys } from '../../lib/query/keys'
+import { changePassword } from '../../lib/api/authClient'
 
 /** Chaves de override criadas pelo mock client (ver src/lib/api/mockClient.ts). */
 const DEMO_OVERRIDE_KEYS = [
@@ -60,6 +61,11 @@ export default function ConfigPage() {
   )
   const [targetsError, setTargetsError] = useState<string | null>(null)
   const [resetOpen, setResetOpen] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [passwordBusy, setPasswordBusy] = useState(false)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
 
   const saveTargets = () => {
     // parseFloat (não parseInt): "80,5" vira 80.5 em vez de truncar para 80.
@@ -102,6 +108,26 @@ export default function ConfigPage() {
     void queryClient.invalidateQueries()
     setResetOpen(false)
     toast('Dados de demonstração restaurados.', 'success')
+  }
+
+  const savePassword = async () => {
+    setPasswordError(null)
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError('As novas senhas não conferem.')
+      return
+    }
+    setPasswordBusy(true)
+    try {
+      await changePassword(currentPassword, newPassword)
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmNewPassword('')
+      toast('Senha alterada. As outras sessões foram encerradas.', 'success')
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : 'Não foi possível alterar a senha.')
+    } finally {
+      setPasswordBusy(false)
+    }
   }
 
   return (
@@ -198,6 +224,18 @@ export default function ConfigPage() {
           inteligentes em um só lugar.
         </p>
         <p className="text-[11px] text-text-muted mt-2">Versão 0.1.0</p>
+      </Card>
+
+      <Card neon title="Segurança da conta" subtitle="Atualize sua senha sem sair desta sessão.">
+        <div className="space-y-3">
+          <Input label="Senha atual" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+          <Input label="Nova senha" type="password" autoComplete="new-password" hint="Use pelo menos 8 caracteres com letras e números." value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+          <Input label="Confirmar nova senha" type="password" autoComplete="new-password" value={confirmNewPassword} onChange={(event) => setConfirmNewPassword(event.target.value)} />
+          {passwordError && <p className="text-xs text-danger">{passwordError}</p>}
+          <Button fullWidth variant="secondary" onClick={() => void savePassword()} disabled={passwordBusy || !currentPassword || !newPassword || !confirmNewPassword}>
+            {passwordBusy ? 'Salvando…' : 'Alterar senha'}
+          </Button>
+        </div>
       </Card>
       </div>
 

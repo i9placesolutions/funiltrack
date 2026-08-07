@@ -1,4 +1,5 @@
 import cors from '@fastify/cors'
+import fastifyCookie from '@fastify/cookie'
 import fastifyStatic from '@fastify/static'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import { randomUUID } from 'node:crypto'
@@ -9,6 +10,36 @@ import { z } from 'zod'
 import type { AppConfig } from './config.js'
 import { checkDatabase, withTransaction } from './db.js'
 import { RedisCache } from './redis.js'
+import {
+  attachAuthUser,
+  authUserFromRequest,
+  clearSessionCookie,
+  createSession,
+  deleteAllUserSessions,
+  deleteSession,
+  getSessionUser,
+  hashPassword,
+  hasUsers,
+  isApiTokenRequest,
+  normalizeEmail,
+  setSessionCookie,
+  validatePassword,
+  verifyPassword,
+} from './auth.js'
+import {
+  UazApiConfigurationError,
+  UazApiError,
+  configureWhatsAppWebhook,
+  connectWhatsApp,
+  createWhatsAppInstance,
+  disconnectWhatsApp,
+  ensureUazApiWebhookSecret,
+  getWhatsAppState,
+  normalizeUazApiEvent,
+  publicUazApiState,
+  recordUazApiEvent,
+  sendWhatsAppText,
+} from './uazapi.js'
 
 const LEAD_STAGES = ['novo', 'contato', 'qualificado', 'vendido', 'perdido'] as const
 const ALERT_TYPES = [
@@ -87,6 +118,39 @@ const metricWebhookSchema = z.object({
   cpc: z.coerce.number().int().min(0),
   cpl: z.coerce.number().int().min(0),
   roas: z.coerce.number().min(0),
+})
+
+const authRegisterSchema = z.object({
+  name: z.string().trim().min(2, 'Informe seu nome.').max(120),
+  email: z.string().trim().email('Informe um e-mail válido.').max(240),
+  password: z.string().min(1, 'Informe uma senha.').max(128),
+})
+
+const authLoginSchema = z.object({
+  email: z.string().trim().email('Informe um e-mail válido.').max(240),
+  password: z.string().min(1, 'Informe sua senha.').max(128),
+})
+
+const authChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Informe a senha atual.'),
+  newPassword: z.string().min(1, 'Informe a nova senha.').max(128),
+})
+
+const whatsappConnectSchema = z.object({
+  phone: z.string().trim().regex(/^\d{10,15}$/, 'Telefone deve estar em formato internacional.').optional(),
+  browser: z.enum(['auto', 'safari', 'firefox', 'edge', 'chrome']).optional(),
+  systemName: z.string().trim().max(80).optional(),
+  proxy_managed_country: z.string().trim().regex(/^[a-z]{2}$/).optional(),
+  proxy_managed_state: z.string().trim().max(80).optional(),
+  proxy_managed_city: z.string().trim().max(120).optional(),
+})
+
+const whatsappSendTextSchema = z.object({
+  number: z.string().trim().min(5).max(120),
+  text: z.string().trim().min(1).max(10_000),
+  replyid: z.string().trim().max(180).optional(),
+  linkPreview: z.boolean().optional(),
+  delay: z.number().int().min(0).max(120_000).optional(),
 })
 
 function numberValue(value: unknown): number {
@@ -279,6 +343,81 @@ function corsOriginValue(config: AppConfig): boolean | string[] {
     .filter(Boolean)
 }
 
+function providerErrorStatus(error: unknown): number {
+  if (error instanceof UazApiConfigurationError) return 503
+  if (error instanceof UazApiError) return Math.max(400, Math.min(error.statusCode, 502))
+  return 500
+}
+
+async function persistLeadMessage(
+  pool: Pool,
+  body: z.input<typeof whatsappWebhookSchema>,
+): Promise<ReturnType<typeof mapLead>> {
+  const phoneDigits = normalizePhone(body.phone)
+  if (!phoneDigits) throw new NotFoundError('Telefone inválido.')
+  const at = body.at ? new Date(body.at) : new Date()
+  const eventType = isIncoming(body.direction ?? 'incoming')
+    ? 'mensagem_recebida'
+    : 'mensagem_enviada'
+  return withTransaction(pool, async (client) => {
+    const existing = await client.query<{ id: string }>(
+      'select id from leads where phone_digits = $1 for update',
+      [phoneDigits],
+    )
+    let leadId = existing.rows[0]?.id
+    if (!leadId) {
+      leadId = body.leadId ?? `lead_${randomUUID()}`
+      const campaignId = await findExistingId(client, 'campaigns', body.campaignId)
+      const adSetId = await findExistingId(client, 'ad_sets', body.adSetId)
+      const adId = await findExistingId(client, 'ads', body.adId)
+      await client.query(
+        `insert into leads
+          (id, name, phone, phone_digits, stage, utm_source, utm_medium, utm_campaign,
+           campaign_id, ad_set_id, ad_id, created_at, last_message_at, value_cents)
+         values ($1, $2, $3, $4, 'novo', $5, $6, $7, $8, $9, $10, $11, $11, 0)`,
+        [
+          leadId,
+          body.name,
+          body.phone,
+          phoneDigits,
+          body.utmSource ?? '',
+          body.utmMedium ?? '',
+          body.utmCampaign ?? '',
+          campaignId,
+          adSetId,
+          adId,
+          at,
+        ],
+      )
+      await client.query(
+        `insert into lead_events (id, lead_id, type, text, occurred_at)
+         values ($1, $2, 'lead_criado', 'Lead criado via webhook do WhatsApp', $3)`,
+        [`lead_event_${randomUUID()}`, leadId, at],
+      )
+    } else {
+      await client.query(
+        `update leads
+         set name = $1,
+             phone = $2,
+             last_message_at = greatest(coalesce(last_message_at, $3), $3),
+             updated_at = now()
+         where id = $4`,
+        [body.name, body.phone, at, leadId],
+      )
+    }
+
+    await client.query(
+      `insert into lead_events (id, lead_id, type, text, occurred_at)
+       values ($1, $2, $3, $4, $5)
+       on conflict (id) do nothing`,
+      [body.id ?? `lead_event_${randomUUID()}`, leadId, eventType, body.text, at],
+    )
+    const saved = await fetchLeadById(client, leadId)
+    if (!saved) throw new NotFoundError('Lead criado, mas não pôde ser lido.')
+    return mapLead(saved)
+  })
+}
+
 export interface AppDependencies {
   pool: Pool
   cache: RedisCache
@@ -288,22 +427,113 @@ export interface AppDependencies {
 export async function buildApp({ pool, cache, config }: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({ logger: true })
 
+  await app.register(fastifyCookie)
   await app.register(cors, {
     origin: corsOriginValue(config),
-    credentials: false,
+    credentials: true,
   })
 
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/api/')) return
+    if (request.method === 'OPTIONS') return
     if (request.url.startsWith('/api/health')) return
     if (request.url.startsWith('/api/webhooks/')) return
-    if (!config.apiToken) return
-
-    const authorization = requestHeaderValue(request, 'authorization')
-    if (authorization !== `Bearer ${config.apiToken}`) {
-      await jsonError(reply, 401, 'Token de API inválido.')
+    if (request.url.startsWith('/api/whatsapp/uazapi-webhook')) return
+    const routePath = request.url.split('?')[0]
+    if (
+      routePath === '/api/auth/login' ||
+      routePath === '/api/auth/register' ||
+      routePath === '/api/auth/me' ||
+      routePath === '/api/auth/logout'
+    ) return
+    if (isApiTokenRequest(request, config)) return
+    const user = await getSessionUser(request, pool)
+    if (!user) {
+      await jsonError(reply, 401, 'Sessão ausente ou expirada.')
       return
     }
+    attachAuthUser(request, user)
+  })
+
+  app.get('/api/auth/me', async (request, reply) => {
+    const user = await getSessionUser(request, pool)
+    if (!user) return jsonError(reply, 401, 'Sessão ausente ou expirada.')
+    return reply.send({ user })
+  })
+
+  app.post('/api/auth/register', async (request, reply) => {
+    const body = parseBody(authRegisterSchema, request.body, reply)
+    if (!body) return
+    const passwordError = validatePassword(body.password)
+    if (passwordError) return jsonError(reply, 400, passwordError)
+    const alreadyHasUsers = await hasUsers(pool)
+    if (alreadyHasUsers && !config.authAllowRegistration) {
+      return jsonError(reply, 403, 'O cadastro de novos usuários está desativado.')
+    }
+    const email = normalizeEmail(body.email)
+    const passwordHash = await hashPassword(body.password)
+    const userId = `user_${randomUUID()}`
+    try {
+      const result = await pool.query<Record<string, unknown>>(
+        `insert into users (id, name, email, password_hash, role)
+         values ($1, $2, $3, $4, $5)
+         returning id, name, email, role`,
+        [userId, body.name, email, passwordHash, alreadyHasUsers ? 'member' : 'owner'],
+      )
+      const user = result.rows[0]
+      const token = await createSession(pool, userId, config)
+      setSessionCookie(reply, token, config)
+      return reply.code(201).send({ user })
+    } catch (error) {
+      if (error instanceof Error && /users_email_lower_uidx|duplicate key/i.test(error.message)) {
+        return jsonError(reply, 409, 'Este e-mail já está cadastrado.')
+      }
+      throw error
+    }
+  })
+
+  app.post('/api/auth/login', async (request, reply) => {
+    const body = parseBody(authLoginSchema, request.body, reply)
+    if (!body) return
+    const result = await pool.query<Record<string, unknown>>(
+      `select id, name, email, role, password_hash
+         from users where lower(email) = $1 and active = true`,
+      [normalizeEmail(body.email)],
+    )
+    const row = result.rows[0]
+    if (!row || !(await verifyPassword(body.password, String(row.password_hash)))) {
+      return jsonError(reply, 401, 'E-mail ou senha inválidos.')
+    }
+    await pool.query('update users set last_login_at = now(), updated_at = now() where id = $1', [row.id])
+    const token = await createSession(pool, String(row.id), config)
+    setSessionCookie(reply, token, config)
+    return reply.send({
+      user: { id: row.id, name: row.name, email: row.email, role: row.role },
+    })
+  })
+
+  app.post('/api/auth/logout', async (request, reply) => {
+    await deleteSession(request, pool)
+    clearSessionCookie(reply)
+    return reply.send({ ok: true })
+  })
+
+  app.post('/api/auth/change-password', async (request, reply) => {
+    const user = authUserFromRequest(request)
+    if (!user) return jsonError(reply, 401, 'Sessão ausente ou expirada.')
+    const body = parseBody(authChangePasswordSchema, request.body, reply)
+    if (!body) return
+    const passwordError = validatePassword(body.newPassword)
+    if (passwordError) return jsonError(reply, 400, passwordError)
+    const result = await pool.query<{ password_hash: string }>('select password_hash from users where id = $1', [user.id])
+    if (!result.rows[0] || !(await verifyPassword(body.currentPassword, result.rows[0].password_hash))) {
+      return jsonError(reply, 400, 'A senha atual está incorreta.')
+    }
+    await pool.query('update users set password_hash = $1, updated_at = now() where id = $2', [await hashPassword(body.newPassword), user.id])
+    await deleteAllUserSessions(pool, user.id)
+    const token = await createSession(pool, user.id, config)
+    setSessionCookie(reply, token, config)
+    return reply.send({ ok: true })
   })
 
   app.get('/api/health', async (_request, reply) => {
@@ -332,6 +562,95 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       status: healthy ? 'ok' : 'error',
       redis: cache.enabled ? (healthy ? 'ok' : 'error') : 'disabled',
     })
+  })
+
+  app.get('/api/whatsapp/status', async (_request, reply) => {
+    try {
+      return reply.send(publicUazApiState(await getWhatsAppState(pool, config)))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível consultar o WhatsApp.')
+    }
+  })
+
+  app.post('/api/whatsapp/instance', async (_request, reply) => {
+    try {
+      return reply.code(201).send(await createWhatsAppInstance(pool, config))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível criar a instância UazAPI.')
+    }
+  })
+
+  app.post('/api/whatsapp/connect', async (request, reply) => {
+    const body = parseBody(whatsappConnectSchema, request.body ?? {}, reply)
+    if (!body) return
+    try {
+      return reply.send(publicUazApiState(await connectWhatsApp(pool, config, body)))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível iniciar a conexão.')
+    }
+  })
+
+  app.post('/api/whatsapp/disconnect', async (_request, reply) => {
+    try {
+      return reply.send(publicUazApiState(await disconnectWhatsApp(pool, config)))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível desconectar.')
+    }
+  })
+
+  app.post('/api/whatsapp/configure-webhook', async (_request, reply) => {
+    try {
+      return reply.send(await configureWhatsAppWebhook(pool, config))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível configurar o webhook UazAPI.')
+    }
+  })
+
+  app.post('/api/whatsapp/send/text', async (request, reply) => {
+    const body = parseBody(whatsappSendTextSchema, request.body, reply)
+    if (!body) return
+    try {
+      const providerResponse = await sendWhatsAppText(pool, config, body)
+      const number = body.number.replace(/@(s\.whatsapp\.net|lid)$/i, '')
+      if (!number.includes('@')) {
+        const normalized = whatsappWebhookSchema.safeParse({
+          id: `uazapi_out_${randomUUID()}`,
+          name: 'Contato WhatsApp',
+          phone: number,
+          text: body.text,
+          direction: 'outgoing',
+          at: new Date().toISOString(),
+        })
+        if (normalized.success) {
+          await persistLeadMessage(pool, normalized.data)
+          await cache.invalidate()
+        }
+      }
+      return reply.send({ ok: true, provider: providerResponse })
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível enviar a mensagem.')
+    }
+  })
+
+  app.post('/api/whatsapp/uazapi-webhook', async (request, reply) => {
+    if (!ensureUazApiWebhookSecret(request, config)) return jsonError(reply, 401, 'Webhook UazAPI não autorizado.')
+    const event = normalizeUazApiEvent(request.body)
+    const inserted = await recordUazApiEvent(pool, event)
+    if (inserted && event.isMessage && event.phone && event.text) {
+      const normalized = whatsappWebhookSchema.safeParse({
+        id: event.providerEventId ?? `uazapi_message_${randomUUID()}`,
+        name: event.name,
+        phone: event.phone,
+        text: event.text,
+        direction: event.direction,
+        at: event.at.toISOString(),
+      })
+      if (normalized.success) {
+        await persistLeadMessage(pool, normalized.data)
+        await cache.invalidate()
+      }
+    }
+    return reply.send({ ok: true, duplicate: !inserted })
   })
 
   app.get('/api/campaigns', async (_request, reply) => {
@@ -579,75 +898,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     const body = parseBody(whatsappWebhookSchema, request.body, reply)
     if (!body) return
-    const phoneDigits = normalizePhone(body.phone)
-    if (!phoneDigits) return jsonError(reply, 400, 'Telefone inválido.')
-
-    const at = body.at ? new Date(body.at) : new Date()
-    const eventType = isIncoming(body.direction ?? 'incoming')
-      ? 'mensagem_recebida'
-      : 'mensagem_enviada'
-    const lead = await withTransaction(pool, async (client) => {
-      const existing = await client.query<{ id: string }>(
-        'select id from leads where phone_digits = $1 for update',
-        [phoneDigits],
-      )
-      let leadId = existing.rows[0]?.id
-      if (!leadId) {
-        leadId = body.leadId ?? `lead_${randomUUID()}`
-        const campaignId = await findExistingId(client, 'campaigns', body.campaignId)
-        const adSetId = await findExistingId(client, 'ad_sets', body.adSetId)
-        const adId = await findExistingId(client, 'ads', body.adId)
-        await client.query(
-          `insert into leads
-            (id, name, phone, phone_digits, stage, utm_source, utm_medium, utm_campaign,
-             campaign_id, ad_set_id, ad_id, created_at, last_message_at, value_cents)
-           values ($1, $2, $3, $4, 'novo', $5, $6, $7, $8, $9, $10, $11, $11, 0)`,
-          [
-            leadId,
-            body.name,
-            body.phone,
-            phoneDigits,
-            body.utmSource ?? '',
-            body.utmMedium ?? '',
-            body.utmCampaign ?? '',
-            campaignId,
-            adSetId,
-            adId,
-            at,
-          ],
-        )
-        await client.query(
-          `insert into lead_events (id, lead_id, type, text, occurred_at)
-           values ($1, $2, 'lead_criado', 'Lead criado via webhook do WhatsApp', $3)`,
-          [`lead_event_${randomUUID()}`, leadId, at],
-        )
-      } else {
-        await client.query(
-          `update leads
-           set name = $1,
-               phone = $2,
-               last_message_at = greatest(coalesce(last_message_at, $3), $3),
-               updated_at = now()
-           where id = $4`,
-          [body.name, body.phone, at, leadId],
-        )
-      }
-
-      await client.query(
-        `insert into lead_events (id, lead_id, type, text, occurred_at)
-         values ($1, $2, $3, $4, $5)`,
-        [
-          body.id ?? `lead_event_${randomUUID()}`,
-          leadId,
-          eventType,
-          body.text,
-          at,
-        ],
-      )
-      const saved = await fetchLeadById(client, leadId)
-      if (!saved) throw new NotFoundError('Lead criado, mas não pôde ser lido.')
-      return mapLead(saved)
-    })
+    const lead = await persistLeadMessage(pool, body)
     await cache.invalidate()
     return reply.code(201).send(lead)
   })

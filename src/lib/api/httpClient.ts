@@ -23,6 +23,7 @@ const API_TOKEN = import.meta.env.VITE_API_TOKEN?.trim()
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       Accept: 'application/json',
       ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),

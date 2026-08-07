@@ -15,6 +15,15 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import {
+  getCurrentUser,
+  login as loginRequest,
+  logout as logoutRequest,
+  register as registerRequest,
+  type AuthUser,
+} from '../lib/api/authClient'
+
+const IS_MOCK_MODE = (import.meta.env.VITE_USE_MOCKS ?? 'false') === 'true'
 
 export type ThemeMode = 'light' | 'dark' | 'auto'
 export type ResolvedTheme = 'light' | 'dark'
@@ -26,6 +35,12 @@ export interface AppPreferences {
 }
 
 export interface AppContextValue {
+  authStatus: 'loading' | 'authenticated' | 'unauthenticated'
+  user: AuthUser | null
+  login: (email: string, password: string) => Promise<AuthUser>
+  register: (name: string, email: string, password: string) => Promise<AuthUser>
+  logout: () => Promise<void>
+  refreshAuth: () => Promise<AuthUser | null>
   themeMode: ThemeMode
   resolvedTheme: ResolvedTheme
   setThemeMode: (mode: ThemeMode) => void
@@ -112,6 +127,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
     resolveTheme(prefs.theme),
   )
+  const [authStatus, setAuthStatus] = useState<AppContextValue['authStatus']>('loading')
+  const [user, setUser] = useState<AuthUser | null>(null)
+
+  const refreshAuth = useCallback(async () => {
+    const currentUser = await getCurrentUser()
+    setUser(currentUser)
+    setAuthStatus(currentUser ? 'authenticated' : 'unauthenticated')
+    return currentUser
+  }, [])
+
+  useEffect(() => {
+    if (IS_MOCK_MODE) {
+      const demoUser: AuthUser = {
+        id: 'demo-user',
+        name: 'Workspace demo',
+        email: 'demo@funiltrack.local',
+        role: 'owner',
+      }
+      setUser(demoUser)
+      setAuthStatus('authenticated')
+      return
+    }
+    void refreshAuth()
+  }, [refreshAuth])
+
+  const login = useCallback(async (email: string, password: string) => {
+    if (IS_MOCK_MODE) {
+      const demoUser: AuthUser = { id: 'demo-user', name: email.split('@')[0] || 'Workspace demo', email, role: 'owner' }
+      setUser(demoUser)
+      setAuthStatus('authenticated')
+      return demoUser
+    }
+    const currentUser = await loginRequest(email, password)
+    setUser(currentUser)
+    setAuthStatus('authenticated')
+    return currentUser
+  }, [])
+
+  const register = useCallback(async (name: string, email: string, password: string) => {
+    if (IS_MOCK_MODE) {
+      const demoUser: AuthUser = { id: 'demo-user', name, email, role: 'owner' }
+      setUser(demoUser)
+      setAuthStatus('authenticated')
+      return demoUser
+    }
+    const currentUser = await registerRequest(name, email, password)
+    setUser(currentUser)
+    setAuthStatus('authenticated')
+    return currentUser
+  }, [])
+
+  const logout = useCallback(async () => {
+    if (!IS_MOCK_MODE) await logoutRequest()
+    setUser(null)
+    setAuthStatus('unauthenticated')
+  }, [])
 
   // Persiste preferências sempre que mudam.
   useEffect(() => {
@@ -166,6 +237,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AppContextValue>(
     () => ({
+      authStatus,
+      user,
+      login,
+      register,
+      logout,
+      refreshAuth,
       themeMode: prefs.theme,
       resolvedTheme,
       setThemeMode,
@@ -176,6 +253,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearReadAlerts,
     }),
     [
+      authStatus,
+      user,
+      login,
+      register,
+      logout,
+      refreshAuth,
       prefs.theme,
       prefs.onboardingSeen,
       prefs.readAlertIds,
