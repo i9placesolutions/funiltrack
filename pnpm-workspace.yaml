@@ -4,5 +4,5 @@ overrides:
   postcss: 8.5.25
   tsx: 4.23.6
 
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
