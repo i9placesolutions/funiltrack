@@ -1,0 +1,8 @@
+overrides:
+  caniuse-lite: 1.0.30001806
+  node-releases: 2.0.52
+  postcss: 8.5.25
+  tsx: 4.23.6
+
+onlyBuiltDependencies:
+  - esbuild
