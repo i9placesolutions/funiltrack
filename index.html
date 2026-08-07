@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="FunilTrack — tracking de campanhas, funil de leads e alertas" />
+    <!-- PWA -->
+    <meta name="theme-color" content="#f0f6fc" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="icon" type="image/png" href="/brand/funiltrack-mark.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <!-- Tipografia: Plus Jakarta Sans (UI + títulos) + JetBrains Mono (números) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <title>FunilTrack</title>
+    <script>
+      // Aplica o tema ANTES do primeiro paint para evitar FOUC.
+      // Preferência persistida em localStorage; "auto" respeita prefers-color-scheme.
+      ;(function () {
+        try {
+          var stored =
+            localStorage.getItem('funiltrack:theme') ||
+            localStorage.getItem('metatrack:theme')
+          var mode = stored === 'light' || stored === 'dark' ? stored : 'auto'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'auto' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+          document.documentElement.dataset.themeMode = mode
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light'
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

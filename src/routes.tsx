@@ -1,0 +1,82 @@
+/**
+ * Definição central de rotas (React Router).
+ *
+ * Convenção estável: cada rota aponta para o arquivo definitivo da feature
+ * (ex.: features/dashboard/DashboardPage.tsx). As equipes substituem apenas o
+ * conteúdo das pastas de feature — este arquivo não deve mudar de estrutura.
+ */
+import { lazy, Suspense, type ComponentType, type ReactElement } from 'react'
+import { Navigate, Outlet, useRoutes } from 'react-router-dom'
+import { AppShell } from './components/layout/AppShell'
+import { Skeleton } from './components/ui/Skeleton'
+import { useApp } from './hooks/useApp'
+
+// Code-splitting por página.
+const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage'))
+const ExplorePage = lazy(() => import('./features/explore/ExplorePage'))
+const CampaignDetailPage = lazy(
+  () => import('./features/campaigns/CampaignDetailPage'),
+)
+const LeadsPage = lazy(() => import('./features/leads/LeadsPage'))
+const LeadDetailPage = lazy(() => import('./features/leads/LeadDetailPage'))
+const FunnelPage = lazy(() => import('./features/funnel/FunnelPage'))
+const AlertsPage = lazy(() => import('./features/alerts/AlertsPage'))
+const ConfigPage = lazy(() => import('./features/config/ConfigPage'))
+const OnboardingPage = lazy(
+  () => import('./features/onboarding/OnboardingPage'),
+)
+
+/** Fallback de carregamento (enquanto o chunk lazy baixa). */
+function PageFallback() {
+  return (
+    <div className="px-4 pt-4 space-y-4" aria-busy="true">
+      <Skeleton height="1.5rem" width="40%" />
+      <Skeleton height="7rem" />
+      <Skeleton height="7rem" />
+      <Skeleton height="7rem" />
+    </div>
+  )
+}
+
+function withSuspense(Component: ComponentType): ReactElement {
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <Component />
+    </Suspense>
+  )
+}
+
+/**
+ * Guarda de onboarding: se o usuário ainda não viu o onboarding
+ * (flag em localStorage via AppContext), redireciona para /onboarding.
+ */
+function RequireOnboarding() {
+  const { onboardingSeen } = useApp()
+  if (!onboardingSeen) return <Navigate to="/onboarding" replace />
+  return <Outlet />
+}
+
+export function AppRoutes() {
+  return useRoutes([
+    {
+      element: <RequireOnboarding />,
+      children: [
+        {
+          element: <AppShell />,
+          children: [
+            { path: '/', element: withSuspense(DashboardPage) },
+            { path: '/explorar', element: withSuspense(ExplorePage) },
+            { path: '/campanhas/:id', element: withSuspense(CampaignDetailPage) },
+            { path: '/leads', element: withSuspense(LeadsPage) },
+            { path: '/leads/:id', element: withSuspense(LeadDetailPage) },
+            { path: '/funil', element: withSuspense(FunnelPage) },
+            { path: '/alertas', element: withSuspense(AlertsPage) },
+            { path: '/config', element: withSuspense(ConfigPage) },
+          ],
+        },
+      ],
+    },
+    { path: '/onboarding', element: withSuspense(OnboardingPage) },
+    { path: '*', element: <Navigate to="/" replace /> },
+  ])
+}

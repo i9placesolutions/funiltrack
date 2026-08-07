@@ -1,0 +1,410 @@
+@import 'tailwindcss';
+
+/*
+ * FunilTrack — Design tokens — v5 "Signal Blue"
+ * Identidade da logo: navy → cyan elétrico, fundo dark-first.
+ * Tema claro por padrão; escuro via [data-theme="dark"].
+ */
+
+:root {
+  /* Cores — tema claro */
+  --color-bg: 240 246 252;
+  --color-surface: 255 255 255;
+  --color-surface-2: 230 239 250;
+  --color-border: 190 210 232;
+  --color-text: 8 20 40;
+  --color-text-muted: 82 104 132;
+  --color-primary: 0 114 255;
+  --color-primary-2: 0 191 255;
+  --color-primary-fg: 255 255 255;
+  --color-accent: 16 185 129;
+  --color-warning: 217 119 6;
+  --color-danger: 225 29 72;
+
+  /* Espaçamentos */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  /* Radii */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-full: 9999px;
+
+  /* Sombras */
+  --shadow-card: 0 1px 2px rgb(8 20 40 / 0.04), 0 10px 28px -14px rgb(8 20 40 / 0.12);
+  --shadow-glow: 0 0 20px -4px rgb(var(--color-primary) / 0.45),
+    0 0 36px -12px rgb(var(--color-primary-2) / 0.35);
+  --shadow-neon: 0 0 12px rgb(var(--color-primary) / 0.35),
+    0 0 24px rgb(var(--color-primary-2) / 0.2);
+}
+
+[data-theme='dark'] {
+  --color-bg: 0 0 0;
+  --color-surface: 10 14 22;
+  --color-surface-2: 16 24 38;
+  --color-border: 32 48 72;
+  --color-text: 236 244 255;
+  --color-text-muted: 130 150 178;
+  --color-primary: 0 191 255;
+  --color-primary-2: 0 114 255;
+  --color-primary-fg: 0 0 0;
+  --color-accent: 52 211 153;
+  --color-warning: 251 191 36;
+  --color-danger: 251 113 133;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.55), 0 16px 40px -18px rgb(0 0 0 / 0.75),
+    inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --shadow-glow: 0 0 24px -2px rgb(var(--color-primary) / 0.55),
+    0 0 48px -10px rgb(var(--color-primary-2) / 0.4);
+  --shadow-neon: 0 0 16px rgb(var(--color-primary) / 0.45),
+    0 0 32px rgb(var(--color-primary-2) / 0.25);
+}
+
+@theme inline {
+  --color-bg: rgb(var(--color-bg));
+  --color-surface: rgb(var(--color-surface));
+  --color-surface-2: rgb(var(--color-surface-2));
+  --color-border: rgb(var(--color-border));
+  --color-text: rgb(var(--color-text));
+  --color-text-muted: rgb(var(--color-text-muted));
+  --color-primary: rgb(var(--color-primary));
+  --color-primary-2: rgb(var(--color-primary-2));
+  --color-primary-fg: rgb(var(--color-primary-fg));
+  --color-accent: rgb(var(--color-accent));
+  --color-warning: rgb(var(--color-warning));
+  --color-danger: rgb(var(--color-danger));
+}
+
+/* Tipografia: Plus Jakarta Sans (UI + títulos) + JetBrains Mono (números). */
+@theme {
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* ---------- Reset mínimo ---------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  font-family: var(--font-sans);
+  background-color: rgb(var(--color-bg));
+  color: rgb(var(--color-text));
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Mesh neon + grade sutil (atmosfera de agência tech). */
+  background-image:
+    radial-gradient(52rem 36rem at 108% -8%, rgb(var(--color-primary) / 0.16), transparent 58%),
+    radial-gradient(44rem 30rem at -18% 108%, rgb(var(--color-primary-2) / 0.12), transparent 55%),
+    radial-gradient(28rem 20rem at 50% 40%, rgb(var(--color-accent) / 0.04), transparent 70%),
+    linear-gradient(rgb(var(--color-border) / 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--color-border) / 0.22) 1px, transparent 1px);
+  background-size:
+    auto,
+    auto,
+    auto,
+    48px 48px,
+    48px 48px;
+  background-attachment: fixed;
+}
+
+[data-theme='dark'] body {
+  background-image:
+    radial-gradient(52rem 36rem at 108% -8%, rgb(var(--color-primary) / 0.14), transparent 58%),
+    radial-gradient(44rem 30rem at -18% 108%, rgb(var(--color-primary-2) / 0.12), transparent 55%),
+    radial-gradient(24rem 18rem at 45% 55%, rgb(var(--color-accent) / 0.05), transparent 70%),
+    linear-gradient(rgb(var(--color-border) / 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--color-border) / 0.35) 1px, transparent 1px);
+  background-size:
+    auto,
+    auto,
+    auto,
+    48px 48px,
+    48px 48px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  letter-spacing: -0.015em;
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  background: rgb(var(--color-primary) / 0.35);
+  color: rgb(var(--color-text));
+}
+
+/* Scrollbar fina */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--color-border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-border));
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------- Efeitos utilitários ---------- */
+
+.glass {
+  background-color: rgb(var(--color-surface) / 0.72);
+  backdrop-filter: blur(18px) saturate(1.55);
+  -webkit-backdrop-filter: blur(18px) saturate(1.55);
+}
+
+[data-theme='dark'] .glass {
+  background-color: rgb(var(--color-surface) / 0.68);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+
+/* Texto com gradiente neon. */
+.text-gradient {
+  background: linear-gradient(
+    110deg,
+    rgb(var(--color-primary)) 0%,
+    rgb(var(--color-primary-2)) 55%,
+    rgb(var(--color-primary)) 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Hairline neon no topo de cards de destaque. */
+.gradient-hairline {
+  position: relative;
+}
+.gradient-hairline::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(var(--color-primary)),
+    rgb(var(--color-primary-2)),
+    transparent
+  );
+  opacity: 0.95;
+  box-shadow: 0 0 12px rgb(var(--color-primary) / 0.55);
+}
+
+/* Card com borda/brilho neon sutil. */
+.neon-panel {
+  position: relative;
+  background:
+    linear-gradient(rgb(var(--color-surface) / 0.92), rgb(var(--color-surface) / 0.92)) padding-box,
+    linear-gradient(
+        135deg,
+        rgb(var(--color-primary) / 0.55),
+        rgb(var(--color-border) / 0.4) 40%,
+        rgb(var(--color-primary-2) / 0.45)
+      )
+      border-box;
+  border: 1px solid transparent;
+  box-shadow: var(--shadow-card);
+}
+
+[data-theme='dark'] .neon-panel {
+  background:
+    linear-gradient(rgb(var(--color-surface) / 0.88), rgb(var(--color-surface) / 0.88)) padding-box,
+    linear-gradient(
+        135deg,
+        rgb(var(--color-primary) / 0.45),
+        rgb(var(--color-border) / 0.35) 42%,
+        rgb(var(--color-primary-2) / 0.4)
+      )
+      border-box;
+  box-shadow: var(--shadow-card), 0 0 24px -16px rgb(var(--color-primary) / 0.35);
+}
+
+/* Dot indicador neon (nav ativa, status live). */
+.neon-dot {
+  box-shadow: 0 0 8px rgb(var(--color-primary) / 0.8), 0 0 16px rgb(var(--color-primary) / 0.4);
+}
+
+/* ---------- Animações ---------- */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: rise 0.35s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgb(var(--color-surface-2)) 40%,
+    rgb(var(--color-border) / 0.55) 50%,
+    rgb(var(--color-surface-2)) 60%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-pop {
+  animation: pop 0.28s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.55;
+    filter: brightness(1.25);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2.2s ease-in-out infinite;
+}
+
+@keyframes neon-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 12px rgb(var(--color-primary) / 0.35),
+      0 0 24px rgb(var(--color-primary-2) / 0.15);
+  }
+  50% {
+    box-shadow: 0 0 18px rgb(var(--color-primary) / 0.55),
+      0 0 36px rgb(var(--color-primary-2) / 0.28);
+  }
+}
+
+.animate-neon-breathe {
+  animation: neon-breathe 3s ease-in-out infinite;
+}
+
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 6s ease infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise,
+  .animate-pop,
+  .skeleton-shimmer,
+  .animate-pulse-glow,
+  .animate-neon-breathe,
+  .animate-gradient {
+    animation: none;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Respeita áreas seguras (notch/home indicator) em PWAs mobile. */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.safe-x {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
