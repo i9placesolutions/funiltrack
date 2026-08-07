@@ -32,6 +32,14 @@ const envSchema = z.object({
   UAZAPI_INSTANCE_NAME: z.string().trim().min(1).max(80).default('funiltrack'),
   UAZAPI_ENCRYPTION_KEY: z.string().trim().min(32).optional(),
   UAZAPI_WEBHOOK_SECRET: z.string().trim().min(16).optional(),
+  META_GRAPH_API_BASE_URL: z.string().trim().url().default('https://graph.facebook.com'),
+  META_GRAPH_API_VERSION: z.string().trim().min(1).default('v23.0'),
+  META_AD_ACCOUNT_ID: z.string().trim().min(1).optional(),
+  META_ACCESS_TOKEN: z.string().trim().min(1).optional(),
+  META_DATASET_ID: z.string().trim().min(1).optional(),
+  META_PIXEL_ID: z.string().trim().min(1).optional(),
+  META_CURRENCY: z.string().trim().length(3).default('BRL'),
+  META_TEST_EVENT_CODE: z.string().trim().min(1).optional(),
   CORS_ORIGIN: z.string().default('*'),
   STATIC_DIR: z.string().default('dist'),
 })
@@ -59,6 +67,14 @@ export interface AppConfig {
   uazapiInstanceName: string
   uazapiEncryptionKey?: string
   uazapiWebhookSecret?: string
+  metaGraphApiBaseUrl: string
+  metaGraphApiVersion: string
+  metaAdAccountId?: string
+  metaAccessToken?: string
+  metaDatasetId?: string
+  metaPixelId?: string
+  metaCurrency: string
+  metaTestEventCode?: string
   corsOrigin: string
   staticDir: string
 }
@@ -98,6 +114,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     uazapiInstanceName: parsed.UAZAPI_INSTANCE_NAME,
     uazapiEncryptionKey: parsed.UAZAPI_ENCRYPTION_KEY,
     uazapiWebhookSecret: parsed.UAZAPI_WEBHOOK_SECRET,
+    metaGraphApiBaseUrl: parsed.META_GRAPH_API_BASE_URL.replace(/\/$/, ''),
+    metaGraphApiVersion: parsed.META_GRAPH_API_VERSION,
+    metaAdAccountId: parsed.META_AD_ACCOUNT_ID,
+    metaAccessToken: parsed.META_ACCESS_TOKEN,
+    metaDatasetId: parsed.META_DATASET_ID,
+    metaPixelId: parsed.META_PIXEL_ID,
+    metaCurrency: parsed.META_CURRENCY.toUpperCase(),
+    metaTestEventCode: parsed.META_TEST_EVENT_CODE,
     corsOrigin: parsed.CORS_ORIGIN,
     staticDir: parsed.STATIC_DIR,
   }

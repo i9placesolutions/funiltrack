@@ -1,8 +1,7 @@
 /**
  * Onboarding — wizard guiado de 3 passos (mobile-first, com progresso):
  *
- * 1. Conectar contas: simulação de conexão Meta Ads + WhatsApp com
- *    animação de progresso (zero fricção técnica).
+ * 1. Conectar contas: consulta as integrações reais de Meta Ads e UazAPI.
  * 2. Definir metas: alvo de CPL e orçamento diário — persistidos em
  *    localStorage (src/lib/alerts/targets.ts) e usados pelos thresholds
  *    do motor de regras de alertas.
@@ -13,7 +12,7 @@
  * Ao concluir, marca a flag existente (AppContext.completeOnboarding)
  * e navega para "/".
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { BrandLogo } from '../../components/brand/BrandLogo'
@@ -24,6 +23,11 @@ import { useApp } from '../../hooks/useApp'
 import { loadAlertTargets, saveAlertTargets } from '../../lib/alerts/targets'
 import { queryKeys } from '../../lib/query/keys'
 import {
+  connectWhatsApp,
+  getMetaStatus,
+  getWhatsAppStatus,
+} from '../../lib/api/authClient'
+import {
   getNotificationPermission,
   requestNotificationPermission,
   type NotificationPermissionState,
@@ -31,7 +35,9 @@ import {
 
 const STEP_TITLES = ['Conectar contas', 'Definir metas', 'Notificações']
 
-type ConnectionStatus = 'idle' | 'connecting' | 'connected'
+type ConnectionStatus = 'idle' | 'checking' | 'connected' | 'error'
+
+const IS_MOCK_MODE = (import.meta.env.VITE_USE_MOCKS ?? 'false') === 'true'
 
 export default function OnboardingPage() {
   const { completeOnboarding } = useApp()
@@ -42,6 +48,8 @@ export default function OnboardingPage() {
   // Estado compartilhado entre passos.
   const [metaStatus, setMetaStatus] = useState<ConnectionStatus>('idle')
   const [whatsStatus, setWhatsStatus] = useState<ConnectionStatus>('idle')
+  const [metaError, setMetaError] = useState<string | null>(null)
+  const [whatsError, setWhatsError] = useState<string | null>(null)
 
   const [initialTargets] = useState(loadAlertTargets)
   const [cplCents, setCplCents] = useState<number | null>(
@@ -64,14 +72,78 @@ export default function OnboardingPage() {
   const [promptResult, setPromptResult] =
     useState<NotificationPermissionState | null>(null)
 
+  useEffect(() => {
+    if (IS_MOCK_MODE) {
+      setMetaStatus('connected')
+      setWhatsStatus('connected')
+      return
+    }
+    let active = true
+    void Promise.all([getMetaStatus(), getWhatsAppStatus()])
+      .then(([meta, whatsapp]) => {
+        if (!active) return
+        setMetaStatus(meta.adsConfigured ? 'connected' : 'idle')
+        setWhatsStatus(whatsapp.connected ? 'connected' : 'idle')
+      })
+      .catch(() => {
+        if (!active) return
+        setMetaError('Não foi possível consultar as integrações. Tente novamente.')
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const finish = () => {
     completeOnboarding()
     navigate('/', { replace: true })
   }
 
   const goToGoals = () => {
-    if (metaStatus !== 'connected' || whatsStatus !== 'connected') return
+    if (metaStatus === 'checking' || whatsStatus === 'checking') return
     setStep(1)
+  }
+
+  const checkMetaConnection = async () => {
+    setMetaStatus('checking')
+    setMetaError(null)
+    try {
+      const status = await getMetaStatus()
+      if (status.adsConfigured) setMetaStatus('connected')
+      else {
+        setMetaStatus('error')
+        setMetaError('Configure META_ACCESS_TOKEN e META_AD_ACCOUNT_ID no Coolify.')
+      }
+    } catch (error) {
+      setMetaStatus('error')
+      setMetaError(error instanceof Error ? error.message : 'Meta Ads indisponível.')
+    }
+  }
+
+  const checkWhatsAppConnection = async () => {
+    setWhatsStatus('checking')
+    setWhatsError(null)
+    try {
+      const current = await getWhatsAppStatus()
+      if (current.connected) {
+        setWhatsStatus('connected')
+        return
+      }
+      if (!current.configured) {
+        setWhatsStatus('error')
+        setWhatsError('Configure a UazAPI no Coolify antes de conectar o QR Code.')
+        return
+      }
+      const next = await connectWhatsApp({ browser: 'auto' })
+      if (next.connected) setWhatsStatus('connected')
+      else {
+        setWhatsStatus('error')
+        setWhatsError('QR Code gerado. Após concluir o onboarding, abra WhatsApp para escanear o código.')
+      }
+    } catch (error) {
+      setWhatsStatus('error')
+      setWhatsError(error instanceof Error ? error.message : 'WhatsApp indisponível.')
+    }
   }
 
   const goToNotifications = () => {
@@ -145,13 +217,10 @@ export default function OnboardingPage() {
           <ConnectStep
             metaStatus={metaStatus}
             whatsStatus={whatsStatus}
-            onMetaConnect={() => setMetaStatus('connecting')}
-            onWhatsConnect={() => setWhatsStatus('connecting')}
-            onStatusDone={(account) =>
-              account === 'meta'
-                ? setMetaStatus('connected')
-                : setWhatsStatus('connected')
-            }
+            metaError={metaError}
+            whatsError={whatsError}
+            onMetaConnect={() => void checkMetaConnection()}
+            onWhatsConnect={() => void checkWhatsAppConnection()}
           />
         )}
 
@@ -245,7 +314,7 @@ export default function OnboardingPage() {
             fullWidth
             size="lg"
             onClick={goToGoals}
-            disabled={metaStatus !== 'connected' || whatsStatus !== 'connected'}
+            disabled={metaStatus === 'checking' || whatsStatus === 'checking'}
           >
             Continuar
           </Button>
@@ -273,17 +342,19 @@ export default function OnboardingPage() {
 interface ConnectStepProps {
   metaStatus: ConnectionStatus
   whatsStatus: ConnectionStatus
+  metaError: string | null
+  whatsError: string | null
   onMetaConnect: () => void
   onWhatsConnect: () => void
-  onStatusDone: (account: 'meta' | 'whatsapp') => void
 }
 
 function ConnectStep({
   metaStatus,
   whatsStatus,
+  metaError,
+  whatsError,
   onMetaConnect,
   onWhatsConnect,
-  onStatusDone,
 }: ConnectStepProps) {
   return (
     <div className="space-y-4">
@@ -297,7 +368,7 @@ function ConnectStep({
         description="Campanhas, gastos e leads dos seus anúncios."
         status={metaStatus}
         onConnect={onMetaConnect}
-        onDone={() => onStatusDone('meta')}
+        errorMessage={metaError}
       />
       <ConnectionCard
         icon="💬"
@@ -305,7 +376,7 @@ function ConnectStep({
         description="Conversas e tempo de resposta dos leads."
         status={whatsStatus}
         onConnect={onWhatsConnect}
-        onDone={() => onStatusDone('whatsapp')}
+        errorMessage={whatsError}
       />
     </div>
   )
@@ -317,7 +388,7 @@ interface ConnectionCardProps {
   description: string
   status: ConnectionStatus
   onConnect: () => void
-  onDone: () => void
+  errorMessage: string | null
 }
 
 function ConnectionCard({
@@ -326,32 +397,8 @@ function ConnectionCard({
   description,
   status,
   onConnect,
-  onDone,
+  errorMessage,
 }: ConnectionCardProps) {
-  const [progress, setProgress] = useState(0)
-  const timerRef = useRef<number | null>(null)
-
-  // Animação de progresso simulada enquanto conecta.
-  useEffect(() => {
-    if (status !== 'connecting') return
-    setProgress(0)
-    timerRef.current = window.setInterval(() => {
-      setProgress((current) => {
-        const next = current + 8 + Math.random() * 10
-        return next >= 100 ? 100 : next
-      })
-    }, 90)
-    return () => {
-      if (timerRef.current !== null) window.clearInterval(timerRef.current)
-    }
-  }, [status])
-
-  useEffect(() => {
-    if (status === 'connecting' && progress >= 100) {
-      onDone()
-    }
-  }, [status, progress, onDone])
-
   return (
     <Card>
       <div className="flex items-start gap-3">
@@ -362,18 +409,8 @@ function ConnectionCard({
           <p className="text-sm font-semibold text-text">{name}</p>
           <p className="text-xs text-text-muted mt-0.5">{description}</p>
 
-          {status === 'connecting' && (
-            <div className="mt-3">
-              <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden">
-                <div
-                  className="h-full bg-primary rounded-full transition-all duration-100"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-              <p className="text-[11px] text-text-muted mt-1.5">
-                Conectando com segurança…
-              </p>
-            </div>
+          {status === 'checking' && (
+            <p className="text-xs text-text-muted mt-2">Consultando a integração real…</p>
           )}
 
           {status === 'connected' && (
@@ -381,11 +418,14 @@ function ConnectionCard({
               ✓ Conta conectada
             </p>
           )}
+          {status === 'error' && errorMessage && (
+            <p className="text-xs leading-5 text-danger mt-2">{errorMessage}</p>
+          )}
         </div>
 
-        {status === 'idle' && (
+        {(status === 'idle' || status === 'error') && (
           <Button size="sm" onClick={onConnect}>
-            Conectar
+            {status === 'error' ? 'Tentar novamente' : 'Verificar'}
           </Button>
         )}
       </div>

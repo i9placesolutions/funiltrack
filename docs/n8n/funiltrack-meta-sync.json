@@ -1,0 +1,85 @@
+{
+  "name": "FunilTrack | Meta Ads sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 30 }
+          ]
+        }
+      },
+      "id": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c001",
+      "name": "A cada 30 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date();\nconst from = new Date(today);\nfrom.setUTCDate(today.getUTCDate() - 2);\nreturn [{ json: { from: from.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) } }];"
+      },
+      "id": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c002",
+      "name": "Definir período de sincronização",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://j30xzsgt5bgou5a4rup6uvh8.147.93.139.212.sslip.io/api/webhooks/meta/sync",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-webhook-token", "value": "={{ $env.FUNILTRACK_WEBHOOK_TOKEN }}" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: $json.from, to: $json.to }) }}",
+        "options": { "timeout": 60000 },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000
+      },
+      "id": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c003",
+      "name": "Sincronizar Meta Ads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [520, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.all()[0]?.json ?? {};\nconsole.log(JSON.stringify({ service: 'funiltrack', integration: 'meta', status: 'ok', campaigns: result.campaigns ?? 0, adSets: result.adSets ?? 0, ads: result.ads ?? 0, metrics: result.metrics ?? 0, from: result.from, to: result.to, syncedAt: new Date().toISOString() }));\nreturn [{ json: result }];"
+      },
+      "id": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c004",
+      "name": "Registrar sincronização",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.all()[0]?.json ?? {};\nconsole.log(JSON.stringify({ service: 'funiltrack', integration: 'meta', status: 'error', checkedAt: new Date().toISOString(), error: { name: error.name ?? 'request_error', code: error.code ?? 'unknown', message: typeof error.message === 'string' ? error.message.slice(0, 300) : 'upstream_error' } }));\nreturn [{ json: { ok: false, integration: 'meta', status: 'error' } }];"
+      },
+      "id": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c005",
+      "name": "Registrar falha Meta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 100]
+    }
+  ],
+  "connections": {
+    "A cada 30 minutos": { "main": [[{ "node": "Definir período de sincronização", "type": "main", "index": 0 }]] },
+    "Definir período de sincronização": { "main": [[{ "node": "Sincronizar Meta Ads", "type": "main", "index": 0 }]] },
+    "Sincronizar Meta Ads": { "main": [[{ "node": "Registrar sincronização", "type": "main", "index": 0 }], [{ "node": "Registrar falha Meta", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveDataErrorExecution": "all", "saveDataSuccessExecution": "none", "saveManualExecutions": true },
+  "versionId": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c006",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}

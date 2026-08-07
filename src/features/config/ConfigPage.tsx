@@ -9,7 +9,7 @@
  *   dados reais devem ser preservados no PostgreSQL.
  * - Sobre: informações breves do produto.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { BrandLogo } from '../../components/brand/BrandLogo'
 import { PageFrame } from '../../components/layout/PageFrame'
@@ -24,7 +24,7 @@ import { useApp } from '../../hooks/useApp'
 import type { ThemeMode } from '../../context/AppContext'
 import { loadAlertTargets, saveAlertTargets } from '../../lib/alerts/targets'
 import { queryKeys } from '../../lib/query/keys'
-import { changePassword } from '../../lib/api/authClient'
+import { changePassword, getMetaStatus, syncMetaAds, type MetaStatus } from '../../lib/api/authClient'
 
 /** Chaves de override criadas pelo mock client (ver src/lib/api/mockClient.ts). */
 const DEMO_OVERRIDE_KEYS = [
@@ -42,6 +42,16 @@ const THEME_OPTIONS: { value: ThemeMode; label: string; icon: string }[] = [
 ]
 
 const isUsingMocks = (import.meta.env.VITE_USE_MOCKS ?? 'false') === 'true'
+
+function syncRange(): { from: string; to: string } {
+  const today = new Date()
+  const from = new Date(today)
+  from.setDate(today.getDate() - 29)
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: today.toISOString().slice(0, 10),
+  }
+}
 
 export default function ConfigPage() {
   const { themeMode, setThemeMode } = useTheme()
@@ -66,6 +76,34 @@ export default function ConfigPage() {
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
   const [passwordBusy, setPasswordBusy] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [metaStatus, setMetaStatus] = useState<MetaStatus | null>(null)
+  const [metaBusy, setMetaBusy] = useState(false)
+  const [metaError, setMetaError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (isUsingMocks) return
+    void getMetaStatus()
+      .then(setMetaStatus)
+      .catch((error: unknown) => {
+        setMetaError(error instanceof Error ? error.message : 'Não foi possível consultar a Meta.')
+      })
+  }, [])
+
+  const runMetaSync = async () => {
+    setMetaBusy(true)
+    setMetaError(null)
+    try {
+      const range = syncRange()
+      await syncMetaAds(range.from, range.to)
+      setMetaStatus(await getMetaStatus())
+      await queryClient.invalidateQueries()
+      toast('Campanhas e métricas da Meta sincronizadas.', 'success')
+    } catch (error) {
+      setMetaError(error instanceof Error ? error.message : 'Não foi possível sincronizar os anúncios.')
+    } finally {
+      setMetaBusy(false)
+    }
+  }
 
   const saveTargets = () => {
     // parseFloat (não parseInt): "80,5" vira 80.5 em vez de truncar para 80.
@@ -202,6 +240,44 @@ export default function ConfigPage() {
           </Button>
         </div>
       </Card>
+
+      {/* Integração real da Meta Ads */}
+      {!isUsingMocks && (
+        <Card
+          neon
+          title="Meta Ads e conversões"
+          subtitle="Atribuição real: Insights das campanhas e eventos do funil enviados à Meta."
+        >
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+              <div>
+                <p className="text-sm font-medium text-text">Marketing API</p>
+                <p className="text-xs text-text-muted mt-0.5">
+                  {metaStatus?.adsConfigured
+                    ? `Conta ${metaStatus.adAccountId ?? 'configurada'}`
+                    : 'Não configurada no ambiente do Coolify'}
+                </p>
+              </div>
+              <span className={metaStatus?.adsConfigured ? 'text-xs font-semibold text-accent' : 'text-xs font-semibold text-warning'}>
+                {metaStatus?.adsConfigured ? 'Conectada' : 'Pendente'}
+              </span>
+            </div>
+            <p className="text-xs leading-5 text-text-muted">
+              Configure <code>META_ACCESS_TOKEN</code> e <code>META_AD_ACCOUNT_ID</code> no Coolify.
+              Para devolver Lead, QualifiedLead e Purchase à Meta, configure também <code>META_DATASET_ID</code>.
+            </p>
+            {metaStatus?.lastSyncAt && (
+              <p className="text-[11px] text-text-muted">
+                Última sincronização: {new Date(metaStatus.lastSyncAt).toLocaleString('pt-BR')}
+              </p>
+            )}
+            {metaError && <p className="text-xs text-danger">{metaError}</p>}
+            <Button fullWidth variant="secondary" onClick={() => void runMetaSync()} disabled={metaBusy || !metaStatus?.adsConfigured}>
+              {metaBusy ? 'Sincronizando…' : 'Sincronizar anúncios agora'}
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* Dados de demonstração — nunca oferece reset destrutivo no modo real. */}
       {isUsingMocks && (

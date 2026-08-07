@@ -1,0 +1,74 @@
+{
+  "name": "FunilTrack | Meta conversions",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 1 }
+          ]
+        }
+      },
+      "id": "2e6d4f89-5a3a-4e72-a5b3-21b9c7d8a001",
+      "name": "A cada minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://j30xzsgt5bgou5a4rup6uvh8.147.93.139.212.sslip.io/api/webhooks/meta/conversions/process",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-webhook-token", "value": "={{ $env.FUNILTRACK_WEBHOOK_TOKEN }}" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ limit: 50 }) }}",
+        "options": { "timeout": 60000 },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000
+      },
+      "id": "2e6d4f89-5a3a-4e72-a5b3-21b9c7d8a002",
+      "name": "Enviar conversões para Meta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [280, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.all()[0]?.json ?? {};\nconsole.log(JSON.stringify({ service: 'funiltrack', integration: 'meta_conversions', status: 'ok', claimed: result.claimed ?? 0, sent: result.sent ?? 0, failed: result.failed ?? 0, configured: result.configured ?? false, processedAt: new Date().toISOString() }));\nreturn [{ json: result }];"
+      },
+      "id": "2e6d4f89-5a3a-4e72-a5b3-21b9c7d8a003",
+      "name": "Registrar conversões",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.all()[0]?.json ?? {};\nconsole.log(JSON.stringify({ service: 'funiltrack', integration: 'meta_conversions', status: 'error', processedAt: new Date().toISOString(), error: { name: error.name ?? 'request_error', code: error.code ?? 'unknown', message: typeof error.message === 'string' ? error.message.slice(0, 300) : 'upstream_error' } }));\nreturn [{ json: { ok: false, integration: 'meta_conversions', status: 'error' } }];"
+      },
+      "id": "2e6d4f89-5a3a-4e72-a5b3-21b9c7d8a004",
+      "name": "Registrar falha de conversões",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 100]
+    }
+  ],
+  "connections": {
+    "A cada minuto": { "main": [[{ "node": "Enviar conversões para Meta", "type": "main", "index": 0 }]] },
+    "Enviar conversões para Meta": { "main": [[{ "node": "Registrar conversões", "type": "main", "index": 0 }], [{ "node": "Registrar falha de conversões", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveDataErrorExecution": "all", "saveDataSuccessExecution": "none", "saveManualExecutions": true },
+  "versionId": "2e6d4f89-5a3a-4e72-a5b3-21b9c7d8a005",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}

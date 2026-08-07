@@ -20,6 +20,26 @@ export interface WhatsAppStatus {
   updatedAt: string | null
 }
 
+export interface MetaStatus {
+  configured: boolean
+  adsConfigured: boolean
+  conversionsConfigured: boolean
+  adAccountId: string | null
+  datasetId: string | null
+  graphApiVersion: string
+  lastSyncAt: string | null
+  lastError: string | null
+}
+
+export interface MetaSyncSummary {
+  from: string
+  to: string
+  campaigns: number
+  adSets: number
+  ads: number
+  metrics: number
+}
+
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -124,5 +144,29 @@ export async function sendWhatsAppText(number: string, text: string): Promise<vo
   await request<{ ok: true }>('/whatsapp/send/text', {
     method: 'POST',
     body: JSON.stringify({ number, text }),
+  })
+}
+
+export async function getMetaStatus(): Promise<MetaStatus> {
+  return request<MetaStatus>('/meta/status')
+}
+
+export async function syncMetaAds(from: string, to: string): Promise<MetaSyncSummary> {
+  return request<MetaSyncSummary>('/meta/sync', {
+    method: 'POST',
+    body: JSON.stringify({ from, to }),
+  })
+}
+
+export async function processMetaConversions(limit = 25): Promise<{
+  configured: boolean
+  claimed: number
+  sent: number
+  failed: number
+  skipped: number
+}> {
+  return request('/meta/conversions/process', {
+    method: 'POST',
+    body: JSON.stringify({ limit }),
   })
 }

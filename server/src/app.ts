@@ -40,6 +40,15 @@ import {
   recordUazApiEvent,
   sendWhatsAppText,
 } from './uazapi.js'
+import {
+  MetaApiError,
+  MetaConfigurationError,
+  conversionEventForStage,
+  enqueueMetaConversionEvent,
+  getMetaStatus,
+  processPendingMetaConversions,
+  syncMetaAds,
+} from './meta.js'
 
 const LEAD_STAGES = ['novo', 'contato', 'qualificado', 'vendido', 'perdido'] as const
 const ALERT_TYPES = [
@@ -94,6 +103,8 @@ const whatsappWebhookSchema = z.object({
   utmSource: z.string().trim().max(120).optional(),
   utmMedium: z.string().trim().max(120).optional(),
   utmCampaign: z.string().trim().max(120).optional(),
+  ctwaClid: z.string().trim().max(240).optional(),
+  fbclid: z.string().trim().max(240).optional(),
 })
 
 const alertWebhookSchema = z.object({
@@ -118,6 +129,15 @@ const metricWebhookSchema = z.object({
   cpc: z.coerce.number().int().min(0),
   cpl: z.coerce.number().int().min(0),
   roas: z.coerce.number().min(0),
+})
+
+const metaSyncSchema = z.object({
+  from: dateOnlySchema,
+  to: dateOnlySchema,
+})
+
+const metaConversionsProcessSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
 })
 
 const authRegisterSchema = z.object({
@@ -346,12 +366,15 @@ function corsOriginValue(config: AppConfig): boolean | string[] {
 function providerErrorStatus(error: unknown): number {
   if (error instanceof UazApiConfigurationError) return 503
   if (error instanceof UazApiError) return Math.max(400, Math.min(error.statusCode, 502))
+  if (error instanceof MetaConfigurationError) return 503
+  if (error instanceof MetaApiError) return Math.max(400, Math.min(error.statusCode, 502))
   return 500
 }
 
 async function persistLeadMessage(
   pool: Pool,
   body: z.input<typeof whatsappWebhookSchema>,
+  config: AppConfig,
 ): Promise<ReturnType<typeof mapLead>> {
   const phoneDigits = normalizePhone(body.phone)
   if (!phoneDigits) throw new NotFoundError('Telefone inválido.')
@@ -359,6 +382,13 @@ async function persistLeadMessage(
   const eventType = isIncoming(body.direction ?? 'incoming')
     ? 'mensagem_recebida'
     : 'mensagem_enviada'
+  const attribution = JSON.stringify({
+    ...(body.utmSource ? { utmSource: body.utmSource } : {}),
+    ...(body.utmMedium ? { utmMedium: body.utmMedium } : {}),
+    ...(body.utmCampaign ? { utmCampaign: body.utmCampaign } : {}),
+    ...(body.ctwaClid ? { ctwaClid: body.ctwaClid } : {}),
+    ...(body.fbclid ? { fbclid: body.fbclid } : {}),
+  })
   return withTransaction(pool, async (client) => {
     const existing = await client.query<{ id: string }>(
       'select id from leads where phone_digits = $1 for update',
@@ -373,8 +403,8 @@ async function persistLeadMessage(
       await client.query(
         `insert into leads
           (id, name, phone, phone_digits, stage, utm_source, utm_medium, utm_campaign,
-           campaign_id, ad_set_id, ad_id, created_at, last_message_at, value_cents)
-         values ($1, $2, $3, $4, 'novo', $5, $6, $7, $8, $9, $10, $11, $11, 0)`,
+           campaign_id, ad_set_id, ad_id, created_at, last_message_at, value_cents, attribution)
+         values ($1, $2, $3, $4, 'novo', $5, $6, $7, $8, $9, $10, $11, $11, 0, $12::jsonb)`,
         [
           leadId,
           body.name,
@@ -387,6 +417,7 @@ async function persistLeadMessage(
           adSetId,
           adId,
           at,
+          attribution,
         ],
       )
       await client.query(
@@ -394,15 +425,26 @@ async function persistLeadMessage(
          values ($1, $2, 'lead_criado', 'Lead criado via webhook do WhatsApp', $3)`,
         [`lead_event_${randomUUID()}`, leadId, at],
       )
+      await enqueueMetaConversionEvent(client, leadId, 'Lead', at, 0, config.metaCurrency)
     } else {
+      const campaignId = await findExistingId(client, 'campaigns', body.campaignId)
+      const adSetId = await findExistingId(client, 'ad_sets', body.adSetId)
+      const adId = await findExistingId(client, 'ads', body.adId)
       await client.query(
         `update leads
          set name = $1,
              phone = $2,
              last_message_at = greatest(coalesce(last_message_at, $3), $3),
+             utm_source = coalesce(nullif($4, ''), utm_source),
+             utm_medium = coalesce(nullif($5, ''), utm_medium),
+             utm_campaign = coalesce(nullif($6, ''), utm_campaign),
+             campaign_id = coalesce($7, campaign_id),
+             ad_set_id = coalesce($8, ad_set_id),
+             ad_id = coalesce($9, ad_id),
+             attribution = coalesce(attribution, '{}'::jsonb) || $10::jsonb,
              updated_at = now()
-         where id = $4`,
-        [body.name, body.phone, at, leadId],
+         where id = $11`,
+        [body.name, body.phone, at, body.utmSource ?? '', body.utmMedium ?? '', body.utmCampaign ?? '', campaignId, adSetId, adId, attribution, leadId],
       )
     }
 
@@ -564,6 +606,36 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     })
   })
 
+  app.get('/api/meta/status', async (_request, reply) => {
+    try {
+      return reply.send(await getMetaStatus(pool, config))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível consultar a Meta.')
+    }
+  })
+
+  app.post('/api/meta/sync', async (request, reply) => {
+    const body = parseBody(metaSyncSchema, request.body, reply)
+    if (!body) return
+    try {
+      const summary = await syncMetaAds(pool, config, body)
+      await cache.invalidate()
+      return reply.send(summary)
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível sincronizar a Meta.')
+    }
+  })
+
+  app.post('/api/meta/conversions/process', async (request, reply) => {
+    const body = parseBody(metaConversionsProcessSchema, request.body ?? {}, reply)
+    if (!body) return
+    try {
+      return reply.send(await processPendingMetaConversions(pool, config, body.limit ?? 25))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível processar conversões da Meta.')
+    }
+  })
+
   app.get('/api/whatsapp/status', async (_request, reply) => {
     try {
       return reply.send(publicUazApiState(await getWhatsAppState(pool, config)))
@@ -622,7 +694,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
           at: new Date().toISOString(),
         })
         if (normalized.success) {
-          await persistLeadMessage(pool, normalized.data)
+          await persistLeadMessage(pool, normalized.data, config)
           await cache.invalidate()
         }
       }
@@ -644,9 +716,12 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
         text: event.text,
         direction: event.direction,
         at: event.at.toISOString(),
+        adId: event.attribution.adId,
+        ctwaClid: event.attribution.ctwaClid,
+        fbclid: event.attribution.fbclid,
       })
       if (normalized.success) {
-        await persistLeadMessage(pool, normalized.data)
+        await persistLeadMessage(pool, normalized.data, config)
         await cache.invalidate()
       }
     }
@@ -833,8 +908,8 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     if (!body) return
 
     const lead = await withTransaction(pool, async (client) => {
-      const current = await client.query<{ id: string; stage: string }>(
-        'select id, stage from leads where id = $1 for update',
+      const current = await client.query<{ id: string; stage: string; value_cents: number }>(
+        'select id, stage, value_cents from leads where id = $1 for update',
         [id],
       )
       if (!current.rows[0]) throw new NotFoundError('Lead não encontrado.')
@@ -853,6 +928,17 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
             `Estágio alterado para ${body.stage}`,
           ],
         )
+        const conversionEvent = conversionEventForStage(body.stage)
+        if (conversionEvent) {
+          await enqueueMetaConversionEvent(
+            client,
+            id,
+            conversionEvent,
+            new Date(),
+            numberValue(current.rows[0].value_cents),
+            config.metaCurrency,
+          )
+        }
       }
 
       const updated = await fetchLeadById(client, id)
@@ -898,9 +984,41 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     const body = parseBody(whatsappWebhookSchema, request.body, reply)
     if (!body) return
-    const lead = await persistLeadMessage(pool, body)
+    const lead = await persistLeadMessage(pool, body, config)
     await cache.invalidate()
     return reply.code(201).send(lead)
+  })
+
+  app.post('/api/webhooks/meta/sync', async (request, reply) => {
+    try {
+      ensureWebhookAuth(request, config)
+    } catch (error) {
+      return jsonError(reply, 401, error instanceof Error ? error.message : 'Webhook não autorizado.')
+    }
+    const body = parseBody(metaSyncSchema, request.body, reply)
+    if (!body) return
+    try {
+      const summary = await syncMetaAds(pool, config, body)
+      await cache.invalidate()
+      return reply.send(summary)
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível sincronizar a Meta.')
+    }
+  })
+
+  app.post('/api/webhooks/meta/conversions/process', async (request, reply) => {
+    try {
+      ensureWebhookAuth(request, config)
+    } catch (error) {
+      return jsonError(reply, 401, error instanceof Error ? error.message : 'Webhook não autorizado.')
+    }
+    const body = parseBody(metaConversionsProcessSchema, request.body ?? {}, reply)
+    if (!body) return
+    try {
+      return reply.send(await processPendingMetaConversions(pool, config, body.limit ?? 25))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível processar conversões da Meta.')
+    }
   })
 
   app.post('/api/webhooks/alerts', async (request, reply) => {

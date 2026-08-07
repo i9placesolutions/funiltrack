@@ -80,6 +80,28 @@ instância pelo próprio painel, use também `UAZAPI_ADMIN_TOKEN` e uma
 ponte, importe os arquivos de `docs/n8n/` e só então preencha
 `N8N_UAZAPI_WEBHOOK_URL`.
 
+## Meta Ads: rastreamento real de anúncios e conversões
+
+O painel não usa métricas mock quando está em produção. A integração Meta
+consulta campanhas, conjuntos, anúncios e o endpoint de Insights pela
+Marketing API e grava o resultado em `campaigns`, `ad_sets`, `ads` e
+`daily_metrics`. Mensagens novas e mudanças para `qualificado` ou `vendido`
+geram eventos idempotentes em `meta_conversion_events`; o workflow n8n pode
+processá-los pela Conversions API.
+
+No Coolify, configure no backend:
+
+- `META_ACCESS_TOKEN` e `META_AD_ACCOUNT_ID` para ler campanhas e métricas;
+- `META_DATASET_ID` (ou `META_PIXEL_ID`) para enviar `Lead`, `QualifiedLead` e
+  `Purchase` à Meta;
+- opcionalmente `META_TEST_EVENT_CODE` durante o teste no Events Manager.
+
+O token não é enviado ao navegador nem versionado. A rota autenticada
+`POST /api/meta/sync` sincroniza um período; o workflow agendado usa
+`POST /api/webhooks/meta/sync` com `WEBHOOK_TOKEN`. A configuração do app e do
+token é feita no Meta Developers/Business Manager; UazAPI continua sendo o
+canal de WhatsApp conectado por QR Code.
+
 ## Estrutura de pastas (resumo)
 
 ```

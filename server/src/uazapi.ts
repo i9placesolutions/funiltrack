@@ -47,6 +47,13 @@ export interface NormalizedUazApiEvent {
   text: string
   direction: 'incoming' | 'outgoing'
   at: Date
+  attribution: {
+    adId?: string
+    ctwaClid?: string
+    fbclid?: string
+    sourceUrl?: string
+    sourceType?: string
+  }
   payload: JsonRecord
 }
 
@@ -362,6 +369,12 @@ export function normalizeUazApiEvent(payload: unknown): NormalizedUazApiEvent {
   const data = asRecord(root.data)
   const message = asRecord(root.message) ?? asRecord(data?.message)
   const key = asRecord(message?.key) ?? asRecord(data?.key) ?? asRecord(root.key)
+  const referral =
+    asRecord(root.referral) ??
+    asRecord(message?.referral) ??
+    asRecord(data?.referral) ??
+    asRecord(getPath(message ?? {}, ['contextInfo', 'referral'])) ??
+    asRecord(getPath(data ?? {}, ['contextInfo', 'referral']))
   const eventType = firstString(root.event, root.eventType, root.type, data?.event, data?.eventType, 'unknown').toLowerCase()
   const text = firstString(
     root.text,
@@ -398,6 +411,13 @@ export function normalizeUazApiEvent(payload: unknown): NormalizedUazApiEvent {
     data?.messageid,
   ) || null
   const isMessage = Boolean(text || phone) && (eventType.includes('message') || eventType === 'history' || eventType === 'unknown')
+  const attribution = {
+    ...(firstString(referral?.source_id) ? { adId: firstString(referral?.source_id) } : {}),
+    ...(firstString(referral?.ctwa_clid, referral?.ctwaClid) ? { ctwaClid: firstString(referral?.ctwa_clid, referral?.ctwaClid) } : {}),
+    ...(firstString(referral?.fbclid) ? { fbclid: firstString(referral?.fbclid) } : {}),
+    ...(firstString(referral?.source_url, referral?.sourceUrl) ? { sourceUrl: firstString(referral?.source_url, referral?.sourceUrl) } : {}),
+    ...(firstString(referral?.source_type, referral?.sourceType) ? { sourceType: firstString(referral?.source_type, referral?.sourceType) } : {}),
+  }
   return {
     eventType,
     providerEventId,
@@ -407,6 +427,7 @@ export function normalizeUazApiEvent(payload: unknown): NormalizedUazApiEvent {
     text,
     direction: fromMe ? 'outgoing' : 'incoming',
     at: toDate(firstString(root.messageTimestamp, root.timestamp, message?.messageTimestamp, data?.messageTimestamp) || root.timestamp),
+    attribution,
     payload: root,
   }
 }
