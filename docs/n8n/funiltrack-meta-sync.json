@@ -39,16 +39,16 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ from: $json.from, to: $json.to }) }}",
-        "options": { "timeout": 60000 },
-        "retryOnFail": true,
-        "maxTries": 3,
-        "waitBetweenTries": 5000
+        "options": { "timeout": 60000 }
       },
       "id": "9d0a7a4d-2c20-4a0b-ae9e-11e8b9b2c003",
       "name": "Sincronizar Meta Ads",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "position": [520, 0]
     },
     {

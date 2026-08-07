@@ -440,7 +440,7 @@ export async function recordUazApiEvent(
   const result = await pool.query(
     `insert into whatsapp_events (id, provider, provider_event_id, event_type, payload)
      values ($1, 'uazapi', $2, $3, $4)
-     on conflict (provider, provider_event_id) do nothing`,
+     on conflict (provider, provider_event_id) where provider_event_id is not null do nothing`,
     [id, event.providerEventId, event.eventType, event.payload],
   )
   return result.rowCount === 1

@@ -29,16 +29,16 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ limit: 50 }) }}",
-        "options": { "timeout": 60000 },
-        "retryOnFail": true,
-        "maxTries": 3,
-        "waitBetweenTries": 5000
+        "options": { "timeout": 60000 }
       },
       "id": "2e6d4f89-5a3a-4e72-a5b3-21b9c7d8a002",
       "name": "Enviar conversões para Meta",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "position": [280, 0]
     },
     {

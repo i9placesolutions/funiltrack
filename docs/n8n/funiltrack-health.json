@@ -13,16 +13,16 @@
       "parameters": {
         "method": "GET",
         "url": "https://j30xzsgt5bgou5a4rup6uvh8.147.93.139.212.sslip.io/api/health",
-        "options": { "timeout": 15000 },
-        "retryOnFail": true,
-        "maxTries": 3,
-        "waitBetweenTries": 5000
+        "options": { "timeout": 15000 }
       },
       "id": "7b24a0f0-4b05-44cf-b12a-7e9a1c4c1002",
       "name": "Consultar health do FunilTrack",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "position": [240, 0]
     },
     {
