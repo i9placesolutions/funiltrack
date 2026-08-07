@@ -27,6 +27,7 @@ const AuthPage = lazy(() => import('./features/auth/AuthPage'))
 const OnboardingPage = lazy(
   () => import('./features/onboarding/OnboardingPage'),
 )
+const LegalPage = lazy(() => import('./features/legal/LegalPage'))
 
 /** Fallback de carregamento (enquanto o chunk lazy baixa). */
 function PageFallback() {
@@ -100,6 +101,9 @@ export function AppRoutes() {
     },
     { path: '/login', element: withSuspense(AuthPage) },
     { path: '/register', element: withSuspense(AuthPage) },
+    { path: '/privacidade', element: withSuspense(LegalPage) },
+    { path: '/termos', element: withSuspense(LegalPage) },
+    { path: '/exclusao-de-dados', element: withSuspense(LegalPage) },
     { path: '*', element: <Navigate to="/" replace /> },
   ])
 }

@@ -156,6 +156,12 @@ const authChangePasswordSchema = z.object({
   newPassword: z.string().min(1, 'Informe a nova senha.').max(128),
 })
 
+const dataDeletionRequestSchema = z.object({
+  email: z.string().trim().email('Informe um e-mail válido.').max(240),
+  name: z.string().trim().min(1).max(120).optional(),
+  details: z.string().trim().min(1).max(1_000).optional(),
+})
+
 const whatsappConnectSchema = z.object({
   phone: z.string().trim().regex(/^\d{10,15}$/, 'Telefone deve estar em formato internacional.').optional(),
   browser: z.enum(['auto', 'safari', 'firefox', 'edge', 'chrome']).optional(),
@@ -486,7 +492,8 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       routePath === '/api/auth/login' ||
       routePath === '/api/auth/register' ||
       routePath === '/api/auth/me' ||
-      routePath === '/api/auth/logout'
+      routePath === '/api/auth/logout' ||
+      routePath === '/api/privacy/deletion-requests'
     ) return
     if (isApiTokenRequest(request, config)) return
     const user = await getSessionUser(request, pool)
@@ -576,6 +583,24 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const token = await createSession(pool, user.id, config)
     setSessionCookie(reply, token, config)
     return reply.send({ ok: true })
+  })
+
+  app.post('/api/privacy/deletion-requests', async (request, reply) => {
+    const body = parseBody(dataDeletionRequestSchema, request.body, reply)
+    if (!body) return
+    const id = `deletion_request_${randomUUID()}`
+    const result = await pool.query<{ id: string; requested_at: Date }>(
+      `insert into data_deletion_requests (id, email, name, details)
+       values ($1, $2, $3, $4)
+       returning id, requested_at`,
+      [id, normalizeEmail(body.email), body.name ?? null, body.details ?? null],
+    )
+    const saved = result.rows[0]
+    return reply.code(202).send({
+      ok: true,
+      requestId: saved.id,
+      requestedAt: saved.requested_at.toISOString(),
+    })
   })
 
   app.get('/api/health', async (_request, reply) => {
