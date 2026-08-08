@@ -221,6 +221,7 @@ export default function DashboardPage() {
     metricsQuery.isError ||
     (Boolean(previousRange) && previousMetricsQuery.isError) ||
     campaignsQuery.isError
+  const hasMetrics = (metrics ?? []).length > 0
 
   return (
     <PageFrame width="wide" className="space-y-5 lg:space-y-6">
@@ -265,129 +266,142 @@ export default function DashboardPage() {
         <DashboardSkeleton />
       ) : hasError ? (
         <ErrorState onRetry={retryAll} />
-      ) : (metrics ?? []).length === 0 ? (
-        <Card>
-          <EmptyState
-            icon="📊"
-            title="Sem métricas no período"
-            description="Não há dados de entrega para os dias selecionados. Tente um período maior."
-          />
-        </Card>
       ) : (
         <>
-          {/* KPIs: carrossel no mobile, grade no desktop */}
-          <section aria-label="Indicadores do período">
-            <div className="flex gap-3 overflow-x-auto -mx-4 px-4 pb-1 snap-x no-scrollbar lg:mx-0 lg:px-0 lg:pb-0 lg:overflow-visible lg:grid lg:grid-cols-3 xl:grid-cols-6 lg:gap-3">
-              {kpis.map((kpi) => (
-                <KpiCard key={kpi.label} kpi={kpi} />
-              ))}
-            </div>
-          </section>
+          {hasMetrics ? (
+            <>
+              {/* KPIs: carrossel no mobile, grade no desktop */}
+              <section aria-label="Indicadores do período">
+                <div className="flex gap-3 overflow-x-auto -mx-4 px-4 pb-1 snap-x no-scrollbar lg:mx-0 lg:px-0 lg:pb-0 lg:overflow-visible lg:grid lg:grid-cols-3 xl:grid-cols-6 lg:gap-3">
+                  {kpis.map((kpi) => (
+                    <KpiCard key={kpi.label} kpi={kpi} />
+                  ))}
+                </div>
+              </section>
 
-          {/* Gráficos lado a lado no desktop */}
-          <section className="grid gap-5 lg:grid-cols-5 lg:gap-6">
-            <Card
-              neon
-              className="lg:col-span-3"
-              title="Custo e leads por dia"
-              subtitle={periodDescription(period)}
-            >
-              <Suspense fallback={<Skeleton height="18rem" />}>
-                <TrendLineChart data={series} height={320} />
-              </Suspense>
-              <div className="flex items-center gap-4 mt-2 text-[11px] text-text-muted">
-                <span className="inline-flex items-center gap-1.5">
-                  <span
-                    className="w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgb(var(--color-primary)/0.8)]"
-                    aria-hidden="true"
-                  />
-                  Custo (R$)
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span
-                    className="w-2 h-2 rounded-full bg-accent shadow-[0_0_8px_rgb(var(--color-accent)/0.8)]"
-                    aria-hidden="true"
-                  />
-                  Leads
-                </span>
-              </div>
-            </Card>
+              {/* Gráficos lado a lado no desktop */}
+              <section className="grid gap-5 lg:grid-cols-5 lg:gap-6">
+                <Card
+                  neon
+                  className="lg:col-span-3"
+                  title="Custo e leads por dia"
+                  subtitle={periodDescription(period)}
+                >
+                  <Suspense fallback={<Skeleton height="18rem" />}>
+                    <TrendLineChart data={series} height={320} />
+                  </Suspense>
+                  <div className="flex items-center gap-4 mt-2 text-[11px] text-text-muted">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        className="w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgb(var(--color-primary)/0.8)]"
+                        aria-hidden="true"
+                      />
+                      Custo (R$)
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        className="w-2 h-2 rounded-full bg-accent shadow-[0_0_8px_rgb(var(--color-accent)/0.8)]"
+                        aria-hidden="true"
+                      />
+                      Leads
+                    </span>
+                  </div>
+                </Card>
 
-            <Card
-              neon
-              className="lg:col-span-2"
-              title="Gasto por campanha"
-              subtitle={periodDescription(period)}
-            >
-              {donutData.length === 0 ? (
-                <EmptyState
-                  title="Sem gasto no período"
-                  description="Nenhuma campanha teve gasto nos dias selecionados."
-                />
-              ) : (
-                <Suspense fallback={<Skeleton height="18rem" />}>
-                  <SpendByCampaignDonut data={donutData} height={240} />
-                </Suspense>
-              )}
+                <Card
+                  neon
+                  className="lg:col-span-2"
+                  title="Gasto por campanha"
+                  subtitle={periodDescription(period)}
+                >
+                  {donutData.length === 0 ? (
+                    <EmptyState
+                      title="Sem gasto no período"
+                      description="Nenhuma campanha teve gasto nos dias selecionados."
+                    />
+                  ) : (
+                    <Suspense fallback={<Skeleton height="18rem" />}>
+                      <SpendByCampaignDonut data={donutData} height={240} />
+                    </Suspense>
+                  )}
+                </Card>
+              </section>
+            </>
+          ) : (
+            <Card>
+              <EmptyState
+                icon="📊"
+                title="Sem métricas no período"
+                description="As campanhas sincronizadas continuam visíveis abaixo. Não há dados de entrega para os dias selecionados."
+              />
             </Card>
-          </section>
+          )}
 
           {/* Lista / tabela de campanhas */}
           <Card
             neon
             title="Campanhas"
-            subtitle={`${campaignRows.length} campanhas no período`}
+            subtitle={`${campaignRows.length} campanhas sincronizadas`}
             flush
           >
-            {/* Cabeçalho de tabela (desktop) */}
-            <div className="hidden lg:grid grid-cols-[minmax(0,1.6fr)_120px_120px_120px_120px] gap-4 px-5 py-3 border-b border-border/70 text-[11px] font-semibold uppercase tracking-wide text-text-muted bg-surface-2/40">
-              <span>Campanha</span>
-              <span>Status</span>
-              <span className="text-right">Leads</span>
-              <span className="text-right">Gasto</span>
-              <span className="text-right">CPL</span>
-            </div>
-            <ul className="divide-y divide-border/80">
-              {campaignRows.map(({ campaign, spend, leads }) => (
-                <li key={campaign.id}>
-                  <Link
-                    to={`/campanhas/${campaign.id}`}
-                    className="flex items-center gap-3 px-4 py-3 min-h-14 hover:bg-surface-2/60 active:bg-surface-2 transition-colors lg:grid lg:grid-cols-[minmax(0,1.6fr)_120px_120px_120px_120px] lg:gap-4 lg:px-5 lg:min-h-0 lg:py-3.5"
-                  >
-                    <div className="flex-1 min-w-0 lg:flex-none">
-                      <p className="text-sm font-medium text-text truncate">
-                        {campaign.name}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1 lg:hidden">
-                        <Badge variant={STATUS_VARIANTS[campaign.status]}>
-                          {STATUS_LABELS[campaign.status]}
-                        </Badge>
-                        <span className="text-[11px] text-text-muted">
-                          {formatNumber(leads)} leads
-                        </span>
-                      </div>
-                    </div>
-                    <div className="hidden lg:flex items-center">
-                      <Badge variant={STATUS_VARIANTS[campaign.status]}>
-                        {STATUS_LABELS[campaign.status]}
-                      </Badge>
-                    </div>
-                    <p className="hidden lg:block text-sm text-text text-right tabular-nums">
-                      {formatNumber(leads)}
-                    </p>
-                    <div className="text-right shrink-0 lg:contents">
-                      <p className="text-sm font-semibold text-text tabular-nums lg:text-right">
-                        {formatBRL(spend)}
-                      </p>
-                      <p className="text-[11px] text-text-muted lg:text-sm lg:text-text lg:text-right lg:font-medium tabular-nums">
-                        <span className="lg:hidden">CPL </span>
-                        {leads > 0 ? formatBRL(Math.round(spend / leads)) : '—'}
-                      </p>
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            {campaignRows.length === 0 ? (
+              <EmptyState
+                title="Nenhuma campanha sincronizada"
+                description="Sincronize a integração Meta para carregar as campanhas reais desta conta."
+              />
+            ) : (
+              <>
+                {/* Cabeçalho de tabela (desktop) */}
+                <div className="hidden lg:grid grid-cols-[minmax(0,1.6fr)_120px_120px_120px_120px] gap-4 px-5 py-3 border-b border-border/70 text-[11px] font-semibold uppercase tracking-wide text-text-muted bg-surface-2/40">
+                  <span>Campanha</span>
+                  <span>Status</span>
+                  <span className="text-right">Leads</span>
+                  <span className="text-right">Gasto</span>
+                  <span className="text-right">CPL</span>
+                </div>
+                <ul className="divide-y divide-border/80">
+                  {campaignRows.map(({ campaign, spend, leads }) => (
+                    <li key={campaign.id}>
+                      <Link
+                        to={`/campanhas/${campaign.id}`}
+                        className="flex items-center gap-3 px-4 py-3 min-h-14 hover:bg-surface-2/60 active:bg-surface-2 transition-colors lg:grid lg:grid-cols-[minmax(0,1.6fr)_120px_120px_120px_120px] lg:gap-4 lg:px-5 lg:min-h-0 lg:py-3.5"
+                      >
+                        <div className="flex-1 min-w-0 lg:flex-none">
+                          <p className="text-sm font-medium text-text truncate">
+                            {campaign.name}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1 lg:hidden">
+                            <Badge variant={STATUS_VARIANTS[campaign.status]}>
+                              {STATUS_LABELS[campaign.status]}
+                            </Badge>
+                            <span className="text-[11px] text-text-muted">
+                              {formatNumber(leads)} leads
+                            </span>
+                          </div>
+                        </div>
+                        <div className="hidden lg:flex items-center">
+                          <Badge variant={STATUS_VARIANTS[campaign.status]}>
+                            {STATUS_LABELS[campaign.status]}
+                          </Badge>
+                        </div>
+                        <p className="hidden lg:block text-sm text-text text-right tabular-nums">
+                          {formatNumber(leads)}
+                        </p>
+                        <div className="text-right shrink-0 lg:contents">
+                          <p className="text-sm font-semibold text-text tabular-nums lg:text-right">
+                            {formatBRL(spend)}
+                          </p>
+                          <p className="text-[11px] text-text-muted lg:text-sm lg:text-text lg:text-right lg:font-medium tabular-nums">
+                            <span className="lg:hidden">CPL </span>
+                            {leads > 0 ? formatBRL(Math.round(spend / leads)) : '—'}
+                          </p>
+                        </div>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </Card>
         </>
       )}
