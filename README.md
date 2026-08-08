@@ -157,11 +157,18 @@ concede acesso à própria conta de anúncios/Dataset/Pixel ou gera um token de
 usuário/sistema que já tenha esse acesso. A plataforma não consegue consultar
 ativos que o Business cliente não compartilhou.
 
-O token não é enviado ao navegador nem versionado. A rota autenticada
-`POST /api/meta/sync` sincroniza o workspace selecionado; o workflow agendado
-usa `POST /api/webhooks/meta/sync` com `WEBHOOK_TOKEN` e processa todas as
-empresas que têm uma integração Meta habilitada. A configuração do app e do
-token é feita no Meta Developers/Business Manager; UazAPI continua sendo o
+O token não é enviado ao navegador nem versionado. O backend sincroniza
+automaticamente todas as empresas que têm uma integração Meta habilitada. Por
+padrão, essa rotina executa na inicialização e a cada 30 minutos, atualizando
+os últimos três dias para capturar alterações e métricas recentes. Ajuste
+`META_SYNC_ENABLED`, `META_SYNC_INTERVAL_MINUTES` e
+`META_SYNC_LOOKBACK_DAYS` no ambiente do backend quando necessário.
+
+A rota autenticada `POST /api/meta/sync` continua disponível para uma
+atualização manual do workspace selecionado. A rota protegida
+`POST /api/webhooks/meta/sync` e o workflow n8n permanecem como opção externa,
+útil quando o n8n já é o orquestrador da instalação. A configuração do app e
+do token é feita no Meta Developers/Business Manager; UazAPI continua sendo o
 canal de WhatsApp conectado por QR Code.
 
 ## Estrutura de pastas (resumo)

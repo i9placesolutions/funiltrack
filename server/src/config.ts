@@ -41,6 +41,9 @@ const envSchema = z.object({
   META_PIXEL_ID: z.string().trim().min(1).optional(),
   META_CURRENCY: z.string().trim().length(3).default('BRL'),
   META_TEST_EVENT_CODE: z.string().trim().min(1).optional(),
+  META_SYNC_ENABLED: booleanFromEnv(true),
+  META_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(5).max(1440).default(30),
+  META_SYNC_LOOKBACK_DAYS: z.coerce.number().int().min(1).max(30).default(3),
   CORS_ORIGIN: z.string().default('*'),
   STATIC_DIR: z.string().default('dist'),
 })
@@ -77,6 +80,9 @@ export interface AppConfig {
   metaPixelId?: string
   metaCurrency: string
   metaTestEventCode?: string
+  metaSyncEnabled: boolean
+  metaSyncIntervalMinutes: number
+  metaSyncLookbackDays: number
   corsOrigin: string
   staticDir: string
 }
@@ -125,6 +131,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     metaPixelId: parsed.META_PIXEL_ID,
     metaCurrency: parsed.META_CURRENCY.toUpperCase(),
     metaTestEventCode: parsed.META_TEST_EVENT_CODE,
+    metaSyncEnabled: parsed.META_SYNC_ENABLED,
+    metaSyncIntervalMinutes: parsed.META_SYNC_INTERVAL_MINUTES,
+    metaSyncLookbackDays: parsed.META_SYNC_LOOKBACK_DAYS,
     corsOrigin: parsed.CORS_ORIGIN,
     staticDir: parsed.STATIC_DIR,
   }

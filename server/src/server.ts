@@ -5,6 +5,7 @@ import { buildApp } from './app.js'
 import { bootstrapLegacyIntegrations } from './integrations.js'
 import { RedisCache } from './redis.js'
 import { seedDemoData } from './seed.js'
+import { startMetaSyncScheduler } from './metaScheduler.js'
 
 loadDotenv({ path: '.env.local' })
 loadDotenv({ path: '.env' })
@@ -30,9 +31,11 @@ async function start(): Promise<void> {
   }
 
   const app = await buildApp({ pool, cache, config })
+  let stopMetaSyncScheduler = (): void => undefined
 
   const close = async (signal: string) => {
     app.log.info({ signal }, 'Encerrando FunilTrack')
+    stopMetaSyncScheduler()
     await app.close()
     await cache.close()
     await pool.end()
@@ -43,6 +46,7 @@ async function start(): Promise<void> {
   process.once('SIGTERM', () => void close('SIGTERM'))
 
   await app.listen({ host: config.host, port: config.port })
+  stopMetaSyncScheduler = startMetaSyncScheduler(pool, config, app.log).stop
   app.log.info({ port: config.port }, 'FunilTrack API disponível')
 }
 
