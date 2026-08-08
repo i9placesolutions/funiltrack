@@ -48,11 +48,64 @@ export interface MetaStatus {
   configured: boolean
   adsConfigured: boolean
   conversionsConfigured: boolean
+  businessLoginConfigured: boolean
+  connectionMethod: 'business_login' | 'manual' | 'not_connected'
   adAccountId: string | null
+  adAccountName: string | null
   datasetId: string | null
+  datasetName: string | null
+  connectedAt: string | null
   graphApiVersion: string
   lastSyncAt: string | null
   lastError: string | null
+}
+
+export interface MetaOAuthSession {
+  id: string
+  status: 'pending' | 'exchanging' | 'authorized' | 'completed' | 'failed' | 'expired' | 'cancelled'
+  expiresAt: string
+  authorizedAt: string | null
+  completedAt: string | null
+  error: string | null
+}
+
+export interface MetaAdAccountOption {
+  id: string
+  name: string
+  currency: string | null
+  status: string | null
+}
+
+export interface MetaTrackingAssetOption {
+  id: string
+  name: string
+  kind: 'pixel'
+}
+
+export interface MetaConversionEvent {
+  id: string
+  leadId: string
+  eventName: string
+  eventId: string
+  eventTime: string
+  valueCents: number
+  currency: string
+  status: 'pending' | 'processing' | 'sent' | 'failed'
+  attempts: number
+  sentAt: string | null
+  createdAt: string
+  lastError: string | null
+  acceptedEvents: number | null
+  matching: {
+    phoneHashed: boolean
+    externalIdHashed: boolean
+    clientIp: boolean
+    ipVersion: 'IPv4' | 'IPv6' | null
+    clientUserAgent: boolean
+    fbp: boolean
+    fbc: boolean
+    ctwaClid: boolean
+  }
 }
 
 export interface MetaSyncSummary {
@@ -260,6 +313,49 @@ export async function sendWhatsAppText(number: string, text: string): Promise<vo
 
 export async function getMetaStatus(): Promise<MetaStatus> {
   return request<MetaStatus>('/meta/status')
+}
+
+export async function startMetaBusinessLogin(): Promise<{
+  authorizationUrl: string
+  session: MetaOAuthSession
+}> {
+  return request('/meta/oauth/start', { method: 'POST' })
+}
+
+export async function getMetaBusinessLoginAssets(sessionId: string): Promise<{
+  session: MetaOAuthSession
+  adAccounts: MetaAdAccountOption[]
+}> {
+  return request(`/meta/oauth/sessions/${encodeURIComponent(sessionId)}/assets`)
+}
+
+export async function getMetaBusinessLoginTrackingAssets(
+  sessionId: string,
+  adAccountId: string,
+): Promise<{
+  session: MetaOAuthSession
+  assets: MetaTrackingAssetOption[]
+}> {
+  const query = new URLSearchParams({ ad_account_id: adAccountId })
+  return request(`/meta/oauth/sessions/${encodeURIComponent(sessionId)}/tracking-assets?${query.toString()}`)
+}
+
+export async function completeMetaBusinessLogin(
+  sessionId: string,
+  input: { adAccountId: string; datasetId: string },
+): Promise<{ session: MetaOAuthSession; status: MetaStatus }> {
+  return request(`/meta/oauth/sessions/${encodeURIComponent(sessionId)}/complete`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function getMetaConversionEvents(limit = 15): Promise<MetaConversionEvent[]> {
+  return request(`/meta/conversions?${new URLSearchParams({ limit: String(limit) }).toString()}`)
+}
+
+export async function getLeadMetaConversionEvents(leadId: string): Promise<MetaConversionEvent[]> {
+  return request(`/leads/${encodeURIComponent(leadId)}/meta-events`)
 }
 
 export async function syncMetaAds(from: string, to: string): Promise<MetaSyncSummary> {

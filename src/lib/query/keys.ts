@@ -18,6 +18,7 @@ export const queryKeys = {
     all: ['leads'] as const,
     list: (params: GetLeadsParams) => ['leads', 'list', params] as const,
     detail: (id: string) => ['leads', 'detail', id] as const,
+    metaEvents: (id: string) => ['leads', 'detail', id, 'meta-events'] as const,
     /** Origens UTM distintas (dataset completo). */
     sources: ['leads', 'sources'] as const,
   },

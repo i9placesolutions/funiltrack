@@ -26,6 +26,7 @@ import {
   connectWhatsApp,
   getMetaStatus,
   getWhatsAppStatus,
+  startMetaBusinessLogin,
 } from '../../lib/api/authClient'
 import {
   getNotificationPermission,
@@ -120,9 +121,13 @@ export default function OnboardingPage() {
     try {
       const status = await getMetaStatus()
       if (status.adsConfigured) setMetaStatus('connected')
-      else {
+      else if (!status.businessLoginConfigured) {
         setMetaStatus('error')
-        setMetaError('Salve a conta e o token Meta nas Configurações deste workspace após concluir o onboarding.')
+        setMetaError('A conexão global da Meta ainda está sendo finalizada pela equipe da plataforma. O cliente não precisa informar token nem Pixel.')
+      }
+      else {
+        const { authorizationUrl } = await startMetaBusinessLogin()
+        window.location.assign(authorizationUrl)
       }
     } catch (error) {
       setMetaStatus('error')

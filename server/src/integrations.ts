@@ -18,10 +18,14 @@ export class IntegrationConfigurationError extends Error {}
 export interface MetaIntegrationConfig {
   accessToken?: string
   adAccountId?: string
+  adAccountName?: string
   datasetId?: string
+  datasetName?: string
   pixelId?: string
   currency: string
   testEventCode?: string
+  connectionMethod?: 'business_login' | 'manual'
+  connectedAt?: string
 }
 
 export interface UazApiIntegrationConfig {
@@ -116,10 +120,14 @@ export async function getMetaIntegration(
     return {
       accessToken: row.secretEncrypted ? decryptIntegrationSecret(row.secretEncrypted, config) : undefined,
       adAccountId: text(row.config.adAccountId),
+      adAccountName: text(row.config.adAccountName),
       datasetId: text(row.config.datasetId),
+      datasetName: text(row.config.datasetName),
       pixelId: text(row.config.pixelId),
       currency: text(row.config.currency) ?? config.metaCurrency,
       testEventCode: text(row.config.testEventCode),
+      connectionMethod: row.config.connectionMethod === 'business_login' ? 'business_login' : 'manual',
+      connectedAt: text(row.config.connectedAt),
     }
   }
   // Compatibilidade transitória: a inicialização copia estes valores para a
@@ -132,6 +140,7 @@ export async function getMetaIntegration(
       pixelId: config.metaPixelId,
       currency: config.metaCurrency,
       testEventCode: config.metaTestEventCode,
+      connectionMethod: 'manual',
     }
   }
   return { currency: config.metaCurrency }
@@ -143,19 +152,27 @@ export async function saveMetaIntegration(
   companyId: string,
   input: {
     adAccountId: string
+    adAccountName?: string
     datasetId?: string
+    datasetName?: string
     pixelId?: string
     currency?: string
     testEventCode?: string
     accessToken?: string
+    connectionMethod?: 'business_login' | 'manual'
+    connectedAt?: string
   },
 ): Promise<void> {
   await saveIntegration(pool, config, companyId, 'meta', {
     adAccountId: input.adAccountId.trim(),
+    ...(input.adAccountName?.trim() ? { adAccountName: input.adAccountName.trim() } : {}),
     ...(input.datasetId?.trim() ? { datasetId: input.datasetId.trim() } : {}),
+    ...(input.datasetName?.trim() ? { datasetName: input.datasetName.trim() } : {}),
     ...(input.pixelId?.trim() ? { pixelId: input.pixelId.trim() } : {}),
     currency: (input.currency?.trim() || config.metaCurrency).toUpperCase(),
     ...(input.testEventCode?.trim() ? { testEventCode: input.testEventCode.trim() } : {}),
+    connectionMethod: input.connectionMethod ?? 'manual',
+    ...(input.connectedAt?.trim() ? { connectedAt: input.connectedAt.trim() } : {}),
   }, input.accessToken?.trim())
 }
 
@@ -251,6 +268,7 @@ export async function bootstrapLegacyIntegrations(pool: Pool, config: AppConfig)
           currency: config.metaCurrency,
           testEventCode: config.metaTestEventCode,
           accessToken: config.metaAccessToken,
+          connectionMethod: 'manual',
         })
       }
     }

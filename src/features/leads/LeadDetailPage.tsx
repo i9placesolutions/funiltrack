@@ -6,7 +6,11 @@
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, type LeadEvent, type LeadEventType } from '../../lib/api'
+import { api, type Lead, type LeadEvent, type LeadEventType } from '../../lib/api'
+import {
+  getLeadMetaConversionEvents,
+  type MetaConversionEvent,
+} from '../../lib/api/authClient'
 import { queryKeys } from '../../lib/query/keys'
 import { staleTimes } from '../../lib/query/queryClient'
 import {
@@ -80,6 +84,153 @@ function TimelineItem({
   )
 }
 
+function SignalChip({ active, label }: { active: boolean; label: string }) {
+  return (
+    <span
+      className={[
+        'rounded-md border px-2 py-1 text-[10px] font-semibold tracking-wide',
+        active
+          ? 'border-accent/40 bg-accent/10 text-accent'
+          : 'border-border bg-surface-2/60 text-text-muted',
+      ].join(' ')}
+    >
+      {active ? '✓ ' : '— '}{label}
+    </span>
+  )
+}
+
+function MetaEventStatus({ status }: { status: MetaConversionEvent['status'] }) {
+  const variant = status === 'sent'
+    ? 'success'
+    : status === 'failed'
+      ? 'danger'
+      : status === 'processing'
+        ? 'primary'
+        : 'warning'
+  const label = status === 'sent'
+    ? 'aceito'
+    : status === 'failed'
+      ? 'falhou'
+      : status === 'processing'
+        ? 'enviando'
+        : 'na fila'
+  return <Badge variant={variant}>{label}</Badge>
+}
+
+function TrackingCard({
+  tracking,
+}: {
+  tracking: NonNullable<Lead['tracking']>
+}) {
+  const hasIp = Boolean(tracking.clientIp ?? tracking.maskedIp)
+  const ipLabel = tracking.fullIpVisible ? tracking.clientIp : tracking.maskedIp
+  const sourceLabel = tracking.ipSource === 'browser_request'
+    ? 'capturado na requisição do navegador'
+    : tracking.ipSource === 'first_party_payload'
+      ? 'enviado por uma origem first-party confiável'
+      : null
+
+  return (
+    <Card
+      neon
+      title="Sinal de origem"
+      subtitle="O que realmente chegou com este lead para melhorar o matching da Meta."
+    >
+      <div className="space-y-3">
+        <div className={[
+          'rounded-xl border p-3',
+          hasIp ? 'border-primary/35 bg-primary/5' : 'border-border bg-surface-2/40',
+        ].join(' ')}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">IP do visitante</p>
+              <p className="mt-1 font-mono text-sm font-bold text-text">
+                {ipLabel ?? 'Não capturado'}
+              </p>
+              {hasIp && <p className="mt-1 text-[11px] text-text-muted">{tracking.ipVersion} · {sourceLabel}</p>}
+            </div>
+            <Badge variant={hasIp ? 'success' : 'neutral'}>{hasIp ? 'disponível' : 'ausente'}</Badge>
+          </div>
+          {!hasIp && (
+            <p className="mt-3 text-xs leading-5 text-text-muted">
+              Este lead veio pelo WhatsApp sem um IP first-party. O FunilTrack não substitui isso pelo IP da UazAPI, n8n ou Meta, pois seria um dado incorreto.
+            </p>
+          )}
+          {hasIp && !tracking.fullIpVisible && (
+            <p className="mt-3 text-xs leading-5 text-text-muted">Seu papel exibe o IP mascarado. Owner e admin visualizam o valor completo quando houver necessidade operacional legítima.</p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5" aria-label="Sinais de matching capturados">
+          <SignalChip active={hasIp} label="IP" />
+          <SignalChip active={tracking.clientUserAgentCaptured} label="User-agent" />
+          <SignalChip active={tracking.fbpCaptured} label="_fbp" />
+          <SignalChip active={tracking.fbcCaptured} label="_fbc" />
+          <SignalChip active={tracking.fbclidCaptured} label="fbclid" />
+          <SignalChip active={tracking.ctwaClidCaptured} label="CTWA" />
+        </div>
+
+        {tracking.capturedAt && (
+          <p className="text-[11px] text-text-muted">Sinal registrado em {formatDateTime(tracking.capturedAt)}.</p>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function MetaEventsCard({
+  events,
+  isPending,
+  isError,
+}: {
+  events: MetaConversionEvent[]
+  isPending: boolean
+  isError: boolean
+}) {
+  return (
+    <Card
+      title="Devolução para a Meta"
+      subtitle="Eventos criados por este lead e o estado real da fila da Conversions API."
+    >
+      {isPending ? (
+        <p className="text-xs text-text-muted">Lendo a auditoria de eventos…</p>
+      ) : isError ? (
+        <p className="text-xs text-danger">Não foi possível consultar a auditoria Meta deste lead.</p>
+      ) : events.length === 0 ? (
+        <p className="text-xs text-text-muted">Nenhum evento foi criado ainda. O primeiro Lead aparece quando o contato é recebido.</p>
+      ) : (
+        <ol className="space-y-3">
+          {events.map((event) => (
+            <li key={event.id} className="rounded-lg border border-border/70 bg-surface-2/35 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-text">{event.eventName}</p>
+                  <p className="mt-0.5 text-[11px] text-text-muted">Criado em {formatDateTime(event.eventTime)} · tentativa {event.attempts}</p>
+                </div>
+                <MetaEventStatus status={event.status} />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <SignalChip active={event.matching.clientIp} label={event.matching.ipVersion ?? 'IP'} />
+                <SignalChip active={event.matching.clientUserAgent} label="User-agent" />
+                <SignalChip active={event.matching.fbp} label="_fbp" />
+                <SignalChip active={event.matching.fbc} label="_fbc" />
+                <SignalChip active={event.matching.ctwaClid} label="CTWA" />
+                <SignalChip active={event.matching.phoneHashed} label="Telefone hash" />
+              </div>
+              {event.status === 'sent' && (
+                <p className="mt-2 text-[11px] text-accent">
+                  A Meta aceitou o evento{event.acceptedEvents !== null ? ` (${event.acceptedEvents} recebido${event.acceptedEvents === 1 ? '' : 's'})` : ''}.
+                </p>
+              )}
+              {event.lastError && <p className="mt-2 text-[11px] text-danger">{event.lastError}</p>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </Card>
+  )
+}
+
 export default function LeadDetailPage() {
   const { id } = useParams<{ id: string }>()
 
@@ -96,6 +247,13 @@ export default function LeadDetailPage() {
     queryFn: () => api.getCampaign(lead?.campaignId as string),
     enabled: Boolean(lead?.campaignId),
     staleTime: staleTimes.campaigns,
+  })
+
+  const metaEventsQuery = useQuery({
+    queryKey: queryKeys.leads.metaEvents(id ?? ''),
+    queryFn: () => getLeadMetaConversionEvents(id as string),
+    enabled: Boolean(id),
+    staleTime: staleTimes.dynamic,
   })
 
   const timeline = useMemo(
@@ -201,6 +359,14 @@ export default function LeadDetailPage() {
           <AttributionRow label="Anúncio" value={lead.adId} />
         </dl>
       </Card>
+
+      {lead.tracking && <TrackingCard tracking={lead.tracking} />}
+
+      <MetaEventsCard
+        events={metaEventsQuery.data ?? []}
+        isPending={metaEventsQuery.isPending}
+        isError={metaEventsQuery.isError}
+      />
 
       {/* Timeline cronológica */}
       <Card

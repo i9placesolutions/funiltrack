@@ -35,6 +35,11 @@ const envSchema = z.object({
   UAZAPI_WEBHOOK_SECRET: z.string().trim().min(16).optional(),
   META_GRAPH_API_BASE_URL: z.string().trim().url().default('https://graph.facebook.com'),
   META_GRAPH_API_VERSION: z.string().trim().min(1).default('v23.0'),
+  META_OAUTH_API_VERSION: z.string().trim().min(1).default('v25.0'),
+  META_APP_ID: z.string().trim().min(1).optional(),
+  META_APP_SECRET: z.string().trim().min(1).optional(),
+  META_BUSINESS_LOGIN_CONFIG_ID: z.string().trim().min(1).optional(),
+  META_OAUTH_REDIRECT_URI: z.string().trim().url().optional(),
   META_AD_ACCOUNT_ID: z.string().trim().min(1).optional(),
   META_ACCESS_TOKEN: z.string().trim().min(1).optional(),
   META_DATASET_ID: z.string().trim().min(1).optional(),
@@ -74,6 +79,11 @@ export interface AppConfig {
   uazapiWebhookSecret?: string
   metaGraphApiBaseUrl: string
   metaGraphApiVersion: string
+  metaOAuthApiVersion: string
+  metaAppId?: string
+  metaAppSecret?: string
+  metaBusinessLoginConfigId?: string
+  metaOAuthRedirectUri?: string
   metaAdAccountId?: string
   metaAccessToken?: string
   metaDatasetId?: string
@@ -125,6 +135,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     uazapiWebhookSecret: parsed.UAZAPI_WEBHOOK_SECRET,
     metaGraphApiBaseUrl: parsed.META_GRAPH_API_BASE_URL.replace(/\/$/, ''),
     metaGraphApiVersion: parsed.META_GRAPH_API_VERSION,
+    metaOAuthApiVersion: parsed.META_OAUTH_API_VERSION,
+    metaAppId: parsed.META_APP_ID,
+    metaAppSecret: parsed.META_APP_SECRET,
+    metaBusinessLoginConfigId: parsed.META_BUSINESS_LOGIN_CONFIG_ID,
+    metaOAuthRedirectUri: parsed.META_OAUTH_REDIRECT_URI,
     metaAdAccountId: parsed.META_AD_ACCOUNT_ID,
     metaAccessToken: parsed.META_ACCESS_TOKEN,
     metaDatasetId: parsed.META_DATASET_ID,

@@ -48,6 +48,7 @@ import {
   conversionEventForStage,
   enqueueMetaConversionEvent,
   getMetaStatus,
+  listMetaConversionEvents,
   processAllPendingMetaConversions,
   processPendingMetaConversions,
   syncAllMetaAds,
@@ -58,6 +59,16 @@ import {
   saveMetaIntegration,
   saveUazApiIntegration,
 } from './integrations.js'
+import {
+  MetaOAuthConfigurationError,
+  MetaOAuthError,
+  completeMetaBusinessLogin,
+  getMetaBusinessLoginAssets,
+  getMetaBusinessLoginTrackingAssets,
+  handleMetaBusinessLoginCallback,
+  metaOAuthResultRedirect,
+  startMetaBusinessLogin,
+} from './metaOAuth.js'
 import {
   addCompanyMember,
   CompanyAccessError,
@@ -171,6 +182,29 @@ const metaConversionsProcessSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
 })
 
+const metaConversionEventsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(15),
+})
+
+const metaOAuthSessionParamsSchema = z.object({
+  sessionId: z.string().trim().regex(/^meta_oauth_[a-f0-9]{24}$/),
+})
+
+const metaOAuthTrackingAssetsQuerySchema = z.object({
+  ad_account_id: z.string().trim().min(1).max(120),
+})
+
+const metaOAuthCompleteSchema = z.object({
+  adAccountId: z.string().trim().min(1).max(120),
+  datasetId: z.string().trim().min(1).max(120),
+})
+
+const metaOAuthCallbackQuerySchema = z.object({
+  state: z.string().trim().min(1).max(300).optional(),
+  code: z.string().trim().min(1).max(4_000).optional(),
+  error: z.string().trim().min(1).max(120).optional(),
+})
+
 const authRegisterSchema = z.object({
   name: z.string().trim().min(2, 'Informe seu nome.').max(120),
   companyName: z.string().trim().min(2, 'Informe o nome da empresa.').max(120).optional(),
@@ -271,7 +305,56 @@ function mapCampaign(row: DbRow) {
   }
 }
 
-function mapLead(row: DbRow) {
+function recordValue(value: unknown): DbRow {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as DbRow
+    : {}
+}
+
+function safeIso(value: unknown): string | null {
+  const candidate = textValue(value)
+  const date = new Date(candidate)
+  return candidate && !Number.isNaN(date.getTime()) ? date.toISOString() : null
+}
+
+function maskedIp(value: string): string {
+  if (isIP(value) === 4) {
+    const [first = '', second = '', third = ''] = value.split('.')
+    return `${first}.${second}.${third}.***`
+  }
+  const prefix = value.split(':').filter(Boolean).slice(0, 2).join(':')
+  return prefix ? `${prefix}::••••` : 'IPv6 protegido'
+}
+
+function mapLeadTracking(row: DbRow, includeFullIp: boolean) {
+  const attribution = recordValue(row.attribution)
+  const clientIp = normalizeClientIp(textValue(attribution.clientIp))
+  const source = attribution.clientIpSource === 'browser_request' || attribution.clientIpSource === 'first_party_payload'
+    ? attribution.clientIpSource
+    : clientIp
+      ? 'first_party_payload'
+      : null
+  const version = clientIp ? isIP(clientIp) : 0
+  return {
+    clientIp: includeFullIp ? clientIp ?? null : null,
+    maskedIp: clientIp ? maskedIp(clientIp) : null,
+    fullIpVisible: Boolean(clientIp && includeFullIp),
+    ipVersion: version === 4 ? 'IPv4' : version === 6 ? 'IPv6' : null,
+    ipSource: source,
+    capturedAt: safeIso(attribution.trackingCapturedAt),
+    clientUserAgentCaptured: Boolean(normalizeClientUserAgent(textValue(attribution.clientUserAgent))),
+    fbpCaptured: Boolean(textValue(attribution.fbp)),
+    fbcCaptured: Boolean(textValue(attribution.fbc)),
+    fbclidCaptured: Boolean(textValue(attribution.fbclid)),
+    ctwaClidCaptured: Boolean(textValue(attribution.ctwaClid)),
+    sourceUrl: textValue(attribution.sourceUrl) || null,
+  }
+}
+
+function mapLead(
+  row: DbRow,
+  options: { includeTracking?: boolean; includeFullIp?: boolean } = {},
+) {
   const timeline = Array.isArray(row.timeline) ? row.timeline : []
   return {
     id: textValue(row.id),
@@ -298,6 +381,9 @@ function mapLead(row: DbRow) {
         at: new Date(textValue(item.at)).toISOString(),
       }
     }),
+    ...(options.includeTracking
+      ? { tracking: mapLeadTracking(row, Boolean(options.includeFullIp)) }
+      : {}),
   }
 }
 
@@ -390,6 +476,7 @@ async function fetchLeadById(queryable: Queryable, companyId: string, id: string
         l.created_at,
         l.last_message_at,
         l.value_cents,
+        l.attribution,
         coalesce(
           jsonb_agg(
             jsonb_build_object(
@@ -419,6 +506,7 @@ function requestHeaderValue(request: FastifyRequest, name: string): string | und
 interface LeadRequestContext {
   clientIp?: string
   clientUserAgent?: string
+  clientIpSource?: 'browser_request'
 }
 
 function normalizeClientIp(value: string | undefined): string | undefined {
@@ -447,6 +535,7 @@ function leadRequestContext(request: FastifyRequest): LeadRequestContext {
   return {
     clientIp: normalizeClientIp(request.ip),
     clientUserAgent,
+    clientIpSource: 'browser_request',
   }
 }
 
@@ -492,7 +581,9 @@ function providerErrorStatus(error: unknown): number {
   if (error instanceof CompanyAccessError) return error.statusCode
   if (error instanceof UazApiConfigurationError) return 503
   if (error instanceof IntegrationConfigurationError) return 503
+  if (error instanceof MetaOAuthConfigurationError) return 503
   if (error instanceof UazApiError) return Math.max(400, Math.min(error.statusCode, 502))
+  if (error instanceof MetaOAuthError) return Math.max(400, Math.min(error.statusCode, 502))
   if (error instanceof MetaConfigurationError) return 503
   if (error instanceof MetaApiError) return Math.max(400, Math.min(error.statusCode, 502))
   return 500
@@ -513,8 +604,14 @@ async function persistLeadMessage(
     : 'mensagem_enviada'
   const fbclid = body.fbclid ?? fbclidFromSourceUrl(body.sourceUrl)
   const fbc = fbcFromAttribution(body.fbc, fbclid, at)
-  const clientIp = normalizeClientIp(body.clientIp) ?? requestContext.clientIp
+  const suppliedClientIp = normalizeClientIp(body.clientIp)
+  const clientIp = suppliedClientIp ?? requestContext.clientIp
   const clientUserAgent = normalizeClientUserAgent(body.clientUserAgent) ?? requestContext.clientUserAgent
+  const clientIpSource = suppliedClientIp
+    ? 'first_party_payload'
+    : clientIp
+      ? requestContext.clientIpSource
+      : undefined
   const attribution = JSON.stringify({
     ...(body.utmSource ? { utmSource: body.utmSource } : {}),
     ...(body.utmMedium ? { utmMedium: body.utmMedium } : {}),
@@ -525,7 +622,9 @@ async function persistLeadMessage(
     ...(fbc ? { fbc } : {}),
     ...(body.sourceUrl ? { sourceUrl: body.sourceUrl } : {}),
     ...(clientIp ? { clientIp } : {}),
+    ...(clientIpSource ? { clientIpSource } : {}),
     ...(clientUserAgent ? { clientUserAgent } : {}),
+    ...(clientIp || clientUserAgent ? { trackingCapturedAt: at.toISOString() } : {}),
   })
   return withTransaction(pool, async (client) => {
     const existing = await client.query<{ id: string }>(
@@ -628,6 +727,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       routePath === '/api/auth/register' ||
       routePath === '/api/auth/me' ||
       routePath === '/api/auth/logout' ||
+      routePath === '/api/meta/oauth/callback' ||
       routePath === '/api/privacy/deletion-requests'
     ) return
     if (isApiTokenRequest(request, config)) return
@@ -653,6 +753,24 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       companies,
       activeCompanyId,
     }
+  }
+
+  // A fila CAPI continua protegida por lock/idempotência no banco. Este disparo
+  // reduz o atraso após uma mensagem ou troca de estágio; o scheduler e o n8n
+  // permanecem como recuperação caso o processo esteja reiniciando.
+  const processMetaConversionsSoon = (companyId: string) => {
+    void processPendingMetaConversions(pool, config, companyId, 25)
+      .then((summary) => {
+        if (summary.failed > 0) {
+          app.log.warn({ companyId, failed: summary.failed }, 'Conversões Meta ficaram pendentes para nova tentativa')
+        }
+      })
+      .catch((error: unknown) => {
+        app.log.warn(
+          { companyId, error: error instanceof Error ? error.message.slice(0, 300) : 'erro desconhecido' },
+          'Não foi possível processar a fila Meta agora; será tentado novamente',
+        )
+      })
   }
 
   app.get('/api/auth/me', async (request, reply) => {
@@ -878,6 +996,115 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     }
   })
 
+  app.post('/api/meta/oauth/start', async (request, reply) => {
+    try {
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      const user = authUserFromRequest(request)
+      if (!user) return jsonError(reply, 401, 'Faça login para conectar os ativos da Meta.')
+      return reply.send(await startMetaBusinessLogin(pool, config, company.id, user.id))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível iniciar a autorização Meta.')
+    }
+  })
+
+  app.get('/api/meta/oauth/callback', async (request, reply) => {
+    const parsed = metaOAuthCallbackQuerySchema.safeParse(request.query)
+    if (!parsed.success) return reply.redirect(metaOAuthResultRedirect(config, 'error'))
+    try {
+      const result = await handleMetaBusinessLoginCallback(pool, config, parsed.data)
+      return reply.redirect(metaOAuthResultRedirect(config, result.status === 'authorized' ? 'success' : 'error', result.sessionId))
+    } catch (error) {
+      request.log.warn(
+        { error: error instanceof Error ? error.message.slice(0, 300) : 'erro desconhecido' },
+        'Callback Meta Business Login não foi concluído',
+      )
+      return reply.redirect(metaOAuthResultRedirect(config, 'error'))
+    }
+  })
+
+  app.get('/api/meta/oauth/sessions/:sessionId/assets', async (request, reply) => {
+    const params = metaOAuthSessionParamsSchema.safeParse(request.params)
+    if (!params.success) return jsonError(reply, 400, 'Sessão Meta inválida.')
+    try {
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      const user = authUserFromRequest(request)
+      if (!user) return jsonError(reply, 401, 'Faça login para continuar a autorização Meta.')
+      return reply.send(await getMetaBusinessLoginAssets(pool, config, company.id, user.id, params.data.sessionId))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível ler os ativos da Meta.')
+    }
+  })
+
+  app.get('/api/meta/oauth/sessions/:sessionId/tracking-assets', async (request, reply) => {
+    const params = metaOAuthSessionParamsSchema.safeParse(request.params)
+    const query = parseQuery(metaOAuthTrackingAssetsQuerySchema, request.query, reply)
+    if (!params.success || !query) {
+      if (!params.success) return jsonError(reply, 400, 'Sessão Meta inválida.')
+      return
+    }
+    try {
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      const user = authUserFromRequest(request)
+      if (!user) return jsonError(reply, 401, 'Faça login para continuar a autorização Meta.')
+      return reply.send(await getMetaBusinessLoginTrackingAssets(
+        pool,
+        config,
+        company.id,
+        user.id,
+        params.data.sessionId,
+        query.ad_account_id,
+      ))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível ler os Pixels/Datasets da Meta.')
+    }
+  })
+
+  app.post('/api/meta/oauth/sessions/:sessionId/complete', async (request, reply) => {
+    const params = metaOAuthSessionParamsSchema.safeParse(request.params)
+    const body = parseBody(metaOAuthCompleteSchema, request.body, reply)
+    if (!params.success || !body) {
+      if (!params.success) return jsonError(reply, 400, 'Sessão Meta inválida.')
+      return
+    }
+    try {
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      const user = authUserFromRequest(request)
+      if (!user) return jsonError(reply, 401, 'Faça login para concluir a autorização Meta.')
+      const session = await completeMetaBusinessLogin(
+        pool,
+        config,
+        company.id,
+        user.id,
+        params.data.sessionId,
+        body,
+      )
+      processMetaConversionsSoon(company.id)
+      await cache.invalidate()
+      return reply.send({ session, status: await getMetaStatus(pool, config, company.id) })
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível concluir a conexão Meta.')
+    }
+  })
+
+  app.get('/api/meta/conversions', async (request, reply) => {
+    const query = parseQuery(metaConversionEventsQuerySchema, request.query, reply)
+    if (!query) return
+    try {
+      const company = await resolveCompanyContext(request, pool, config)
+      const includeFailureDetails = company.platformToken || company.role === 'owner' || company.role === 'admin'
+      return reply.send(await listMetaConversionEvents(pool, company.id, {
+        limit: query.limit,
+        includeFailureDetails,
+      }))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível consultar a fila Meta.')
+    }
+  })
+
   app.post('/api/meta/sync', async (request, reply) => {
     const body = parseBody(metaSyncSchema, request.body, reply)
     if (!body) return
@@ -974,6 +1201,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
         if (normalized.success) {
           await persistLeadMessage(pool, normalized.data, config, company.id)
           await cache.invalidate()
+          processMetaConversionsSoon(company.id)
         }
       }
       return reply.send({ ok: true, provider: providerResponse })
@@ -1005,6 +1233,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       if (normalized.success) {
         await persistLeadMessage(pool, normalized.data, config, companyId)
         await cache.invalidate()
+        processMetaConversionsSoon(companyId)
       }
     }
     return reply.send({ ok: true, duplicate: !inserted })
@@ -1036,6 +1265,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       if (normalized.success) {
         await persistLeadMessage(pool, normalized.data, config, companyId)
         await cache.invalidate()
+        processMetaConversionsSoon(companyId)
       }
     }
     return reply.send({ ok: true, duplicate: !inserted })
@@ -1199,7 +1429,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       values,
     )
     const total = numberValue(result.rows[0]?.total)
-    const items = result.rows.map(mapLead)
+    const items = result.rows.map((row) => mapLead(row))
     const response = {
       items,
       total,
@@ -1213,15 +1443,34 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const company = await resolveCompanyContext(request, pool, config)
     const params = request.params as { id?: string }
     const id = params.id ?? ''
-    const cacheNamespace = `company:${company.id}:lead:${encodeURIComponent(id)}`
+    const includeFullIp = company.platformToken || company.role === 'owner' || company.role === 'admin'
+    const cacheNamespace = `company:${company.id}:lead:${encodeURIComponent(id)}:${includeFullIp ? 'tracking-full' : 'tracking-masked'}`
     const cached = await cache.getJson<ReturnType<typeof mapLead>>(cacheNamespace)
     if (cached) return reply.send(cached)
 
     const row = await fetchLeadById(pool, company.id, id)
     if (!row) return jsonError(reply, 404, 'Lead não encontrado.')
-    const lead = mapLead(row)
+    const lead = mapLead(row, { includeTracking: true, includeFullIp })
     await cache.setJson(cacheNamespace, lead, 30)
     return reply.send(lead)
+  })
+
+  app.get('/api/leads/:id/meta-events', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    const params = request.params as { id?: string }
+    const leadId = params.id?.trim() ?? ''
+    if (!leadId) return jsonError(reply, 400, 'Informe o lead.')
+    const lead = await pool.query<{ id: string }>(
+      'select id from leads where company_id = $1 and id = $2',
+      [company.id, leadId],
+    )
+    if (!lead.rows[0]) return jsonError(reply, 404, 'Lead não encontrado.')
+    const includeFailureDetails = company.platformToken || company.role === 'owner' || company.role === 'admin'
+    return reply.send(await listMetaConversionEvents(pool, company.id, {
+      leadId,
+      limit: 10,
+      includeFailureDetails,
+    }))
   })
 
   app.patch('/api/leads/:id/stage', async (request, reply) => {
@@ -1269,9 +1518,13 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
       const updated = await fetchLeadById(client, company.id, id)
       if (!updated) throw new NotFoundError('Lead não encontrado.')
-      return mapLead(updated)
+      return mapLead(updated, {
+        includeTracking: true,
+        includeFullIp: company.platformToken || company.role === 'owner' || company.role === 'admin',
+      })
     })
     await cache.invalidate()
+    processMetaConversionsSoon(company.id)
     return reply.send(lead)
   })
 
@@ -1322,6 +1575,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
       leadRequestContext(request),
     )
     await cache.invalidate()
+    processMetaConversionsSoon(body.companyId ?? 'company_i9place')
     return reply.code(201).send(lead)
   })
 

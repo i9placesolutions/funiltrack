@@ -4,8 +4,10 @@ import type { Pool, PoolClient } from 'pg'
 import type { AppConfig } from './config.js'
 import { withTransaction } from './db.js'
 import { getMetaIntegration, type MetaIntegrationConfig } from './integrations.js'
+import { isMetaBusinessLoginConfigured } from './metaOAuth.js'
 
 type JsonRecord = Record<string, unknown>
+type DbRow = Record<string, unknown>
 type Queryable = Pool | PoolClient
 
 type MetaRequestConfig = MetaIntegrationConfig & Pick<
@@ -53,8 +55,13 @@ export interface MetaStatus {
   configured: boolean
   adsConfigured: boolean
   conversionsConfigured: boolean
+  businessLoginConfigured: boolean
+  connectionMethod: 'business_login' | 'manual' | 'not_connected'
   adAccountId: string | null
+  adAccountName: string | null
   datasetId: string | null
+  datasetName: string | null
+  connectedAt: string | null
   graphApiVersion: string
   lastSyncAt: string | null
   lastError: string | null
@@ -78,6 +85,32 @@ export interface MetaConversionProcessSummary {
   sent: number
   failed: number
   skipped: number
+}
+
+export interface MetaConversionAuditItem {
+  id: string
+  leadId: string
+  eventName: string
+  eventId: string
+  eventTime: string
+  valueCents: number
+  currency: string
+  status: string
+  attempts: number
+  sentAt: string | null
+  createdAt: string
+  lastError: string | null
+  acceptedEvents: number | null
+  matching: {
+    phoneHashed: boolean
+    externalIdHashed: boolean
+    clientIp: boolean
+    ipVersion: 'IPv4' | 'IPv6' | null
+    clientUserAgent: boolean
+    fbp: boolean
+    fbc: boolean
+    ctwaClid: boolean
+  }
 }
 
 interface MetaPage<T> {
@@ -421,12 +454,20 @@ export async function getMetaStatus(pool: Pool, config: AppConfig, companyId: st
   const row = state.rows[0]
   const adsConfigured = Boolean(integration.accessToken && integration.adAccountId)
   const conversionsConfigured = Boolean(integration.accessToken && (integration.datasetId || integration.pixelId))
+  const connectionMethod = integration.accessToken
+    ? (integration.connectionMethod ?? 'manual')
+    : 'not_connected'
   return {
     configured: adsConfigured || conversionsConfigured,
     adsConfigured,
     conversionsConfigured,
+    businessLoginConfigured: isMetaBusinessLoginConfigured(config),
+    connectionMethod,
     adAccountId: integration.adAccountId ?? null,
+    adAccountName: integration.adAccountName ?? null,
     datasetId: integration.datasetId ?? integration.pixelId ?? null,
+    datasetName: integration.datasetName ?? null,
+    connectedAt: integration.connectedAt ?? null,
     graphApiVersion: config.metaGraphApiVersion,
     lastSyncAt: row?.last_sync_at ? new Date(String(row.last_sync_at)).toISOString() : null,
     lastError: text(row?.last_error) || null,
@@ -731,11 +772,83 @@ export function buildMetaCapiEvent(event: MetaCapiEventInput): JsonRecord {
 async function sendConversion(
   config: MetaRequestConfig,
   event: MetaCapiEventInput,
-): Promise<void> {
+): Promise<JsonRecord> {
   const { datasetId } = requireConversionsConfig(config)
   const body: JsonRecord = { data: [buildMetaCapiEvent(event)] }
   if (config.testEventCode) body.test_event_code = config.testEventCode
-  await metaRequest(config, `/${datasetId}/events`, { method: 'POST', body })
+  return metaRequest<JsonRecord>(config, `/${datasetId}/events`, { method: 'POST', body })
+}
+
+function conversionReceipt(value: unknown): JsonRecord {
+  const response = asRecord(value) ?? {}
+  const received = Number(response.events_received)
+  const traceId = text(response.fbtrace_id)
+  return {
+    ...(Number.isFinite(received) ? { eventsReceived: Math.max(0, Math.round(received)) } : {}),
+    ...(traceId ? { traceId } : {}),
+    receivedAt: new Date().toISOString(),
+  }
+}
+
+function matchingAudit(value: unknown): MetaConversionAuditItem['matching'] {
+  const matching = capiMatchingFromEventPayload(value)
+  const ipKind = matching.clientIp ? isIP(matching.clientIp) : 0
+  return {
+    phoneHashed: true,
+    externalIdHashed: true,
+    clientIp: Boolean(ipKind),
+    ipVersion: ipKind === 4 ? 'IPv4' : ipKind === 6 ? 'IPv6' : null,
+    clientUserAgent: Boolean(matching.clientUserAgent),
+    fbp: Boolean(matching.fbp),
+    fbc: Boolean(matching.fbc),
+    ctwaClid: Boolean(matching.ctwaClid),
+  }
+}
+
+function acceptedEvents(value: unknown): number | null {
+  const payload = asRecord(value)
+  const receipt = asRecord(payload?.receipt)
+  const count = Number(receipt?.eventsReceived)
+  return Number.isFinite(count) ? Math.max(0, Math.round(count)) : null
+}
+
+export async function listMetaConversionEvents(
+  pool: Pool,
+  companyId: string,
+  options: { leadId?: string; limit?: number; includeFailureDetails?: boolean } = {},
+): Promise<MetaConversionAuditItem[]> {
+  const values: unknown[] = [companyId]
+  const where = ['company_id = $1']
+  if (options.leadId) {
+    values.push(options.leadId)
+    where.push(`lead_id = $${values.length}`)
+  }
+  values.push(Math.min(Math.max(Math.round(options.limit ?? 25), 1), 100))
+  const result = await pool.query<DbRow>(
+    `select id, lead_id, event_name, event_id, event_time, value_cents, currency,
+            status, attempts, last_error, sent_at, created_at, payload
+       from meta_conversion_events
+      where ${where.join(' and ')}
+      order by event_time desc, created_at desc
+      limit $${values.length}`,
+    values,
+  )
+  return result.rows.map((row) => ({
+    id: text(row.id),
+    leadId: text(row.lead_id),
+    eventName: text(row.event_name),
+    eventId: text(row.event_id),
+    eventTime: new Date(String(row.event_time)).toISOString(),
+    valueCents: integer(row.value_cents),
+    currency: text(row.currency, 'BRL'),
+    status: text(row.status),
+    attempts: integer(row.attempts),
+    sentAt: row.sent_at ? new Date(String(row.sent_at)).toISOString() : null,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    lastError: options.includeFailureDetails ? (text(row.last_error) || null) : null,
+    acceptedEvents: acceptedEvents(row.payload),
+    matching: matchingAudit(row.payload),
+  }))
 }
 
 export async function processPendingMetaConversions(
@@ -774,7 +887,7 @@ export async function processPendingMetaConversions(
   let skipped = 0
   for (const row of claimed.rows) {
     try {
-      await sendConversion(metaConfig, {
+      const response = await sendConversion(metaConfig, {
         companyId,
         eventName: text(row.event_name),
         eventId: text(row.event_id),
@@ -787,9 +900,10 @@ export async function processPendingMetaConversions(
       })
       await pool.query(
           `update meta_conversion_events
-            set status = 'sent', sent_at = now(), last_error = null, updated_at = now()
+            set status = 'sent', sent_at = now(), last_error = null,
+                payload = coalesce(payload, '{}'::jsonb) || $3::jsonb, updated_at = now()
           where company_id = $1 and id = $2`,
-        [companyId, row.id],
+        [companyId, row.id, JSON.stringify({ receipt: conversionReceipt(response) })],
       )
       sent += 1
     } catch (error) {

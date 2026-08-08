@@ -133,6 +133,22 @@ export interface Lead {
   /** Valor estimado/fechado em centavos de BRL. */
   value: number
   timeline: LeadEvent[]
+  /** Sinais first-party que estavam disponíveis quando o lead foi capturado. */
+  tracking?: {
+    /** IP real somente para owner/admin; membro recebe null. */
+    clientIp: string | null
+    maskedIp: string | null
+    fullIpVisible: boolean
+    ipVersion: 'IPv4' | 'IPv6' | null
+    ipSource: 'first_party_payload' | 'browser_request' | null
+    capturedAt: string | null
+    clientUserAgentCaptured: boolean
+    fbpCaptured: boolean
+    fbcCaptured: boolean
+    fbclidCaptured: boolean
+    ctwaClidCaptured: boolean
+    sourceUrl: string | null
+  }
 }
 
 /** Alerta exibido na aba Alertas. */

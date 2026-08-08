@@ -73,11 +73,10 @@ acesso a outra empresa sem uma associação válida no banco.
 
 Há um único app central da Meta — o app **FunilTrack/i9Place**. Uma empresa
 cliente não precisa criar outro app da Meta: ela precisa conceder acesso aos
-ativos dela (conta de anúncios e Dataset/Pixel) e fornecer um token da Meta
-com as permissões necessárias. Em **Configurações → Integrações da empresa**,
-o owner ou admin informa os IDs e o token exclusivamente para aquele
-workspace. O token é criptografado no servidor e nunca é entregue ao
-navegador.
+ativos dela (conta de anúncios e Dataset/Pixel) pelo botão **Conectar Meta**.
+O owner/admin escolhe somente os ativos que a Meta listou após a autorização;
+não cola token, ID de Pixel ou Dataset. O token devolvido à plataforma é
+guardado cifrado no backend e nunca é entregue ao navegador.
 
 ## Autenticação e WhatsApp UazAPI
 
@@ -112,8 +111,9 @@ O painel não usa métricas mock quando está em produção. A integração Meta
 consulta campanhas, conjuntos, anúncios e o endpoint de Insights pela
 Marketing API e grava o resultado em `campaigns`, `ad_sets`, `ads` e
 `daily_metrics`. Mensagens novas e mudanças para `qualificado` ou `vendido`
-geram eventos idempotentes em `meta_conversion_events`; o workflow n8n pode
-processá-los pela Conversions API.
+geram eventos idempotentes em `meta_conversion_events`. O backend tenta a fila
+logo após a mudança e também na rotina automática; o workflow n8n é uma
+redundância opcional, não a única forma de enviar a Conversions API.
 
 ### Matching da Conversions API
 
@@ -142,20 +142,30 @@ n8n não carregam o IP/UA real da pessoa que enviou uma mensagem, portanto eles
 quando a referência os entrega; na ausência de `fbc`, o backend monta o valor
 no formato oficial a partir do `fbclid` recebido.
 
+No detalhe do lead, owner/admin vê o IP completo quando ele foi capturado;
+membros recebem somente a versão mascarada. A tela também mostra se `_fbp`,
+`_fbc`, `fbclid`, `ctwa_clid` e user-agent estavam disponíveis, além da fila
+por evento (`na fila`, `enviando`, `aceito` ou `falhou`). `Aceito` indica que a
+Meta respondeu com sucesso — não é uma promessa de atribuição ao anúncio.
+
 O cliente que envia dados first-party é responsável por coletá-los com base
 legal/consentimento aplicável e por não encaminhar IP, cookies ou user-agent
 inventados. Isso melhora o Event Match Quality sem reportar dados errados.
 
-Para cada empresa, configure no painel os campos de conta de anúncios,
-Dataset/Pixel, token e, se necessário, código de evento de teste. As variáveis
-globais `META_*` do Coolify permanecem apenas como bootstrap compatível da
-empresa inicial i9Place; não devem ser usadas para cadastrar clientes novos.
+Antes de liberar o botão no painel, a plataforma configura uma única vez no
+Coolify `META_APP_ID`, `META_APP_SECRET`, `META_BUSINESS_LOGIN_CONFIG_ID` e
+`META_OAUTH_REDIRECT_URI`. A URI deve ser cadastrada exatamente no Meta
+Developers como URI de redirecionamento OAuth válida. A configuração Business
+Login deve solicitar os ativos e permissões aprovados para a integração de
+parceiro da Conversions API. As variáveis globais de token/conta/Dataset são
+somente bootstrap compatível da empresa inicial i9Place; não devem ser usadas
+para cadastrar clientes novos.
 
 O app central da Meta deve estar vinculado ao Business da plataforma e ter as
 permissões/aprovações compatíveis com os ativos que serão lidos. Cada cliente
-concede acesso à própria conta de anúncios/Dataset/Pixel ou gera um token de
-usuário/sistema que já tenha esse acesso. A plataforma não consegue consultar
-ativos que o Business cliente não compartilhou.
+concede acesso à própria conta de anúncios/Dataset/Pixel no fluxo oficial de
+autorização. A plataforma não consegue consultar ativos que o Business cliente
+não compartilhou.
 
 O token não é enviado ao navegador nem versionado. O backend sincroniza
 automaticamente todas as empresas que têm uma integração Meta habilitada. Por

@@ -27,17 +27,26 @@ import { queryKeys } from '../../lib/query/keys'
 import {
   addCompanyMember,
   changePassword,
+  completeMetaBusinessLogin,
   createCompany as createCompanyRequest,
   getCompanyMembers,
+  getMetaBusinessLoginAssets,
+  getMetaBusinessLoginTrackingAssets,
+  getMetaConversionEvents,
   getMetaStatus,
-  saveMetaIntegration,
   saveUazApiIntegration,
   setActiveCompanyId,
+  startMetaBusinessLogin,
+  processMetaConversions,
   syncMetaAds,
   updateCurrentCompany,
   type CompanyMember,
   type CompanyRole,
+  type MetaAdAccountOption,
+  type MetaConversionEvent,
+  type MetaOAuthSession,
   type MetaStatus,
+  type MetaTrackingAssetOption,
 } from '../../lib/api/authClient'
 
 /** Chaves de override criadas pelo mock client (ver src/lib/api/mockClient.ts). */
@@ -94,14 +103,18 @@ export default function ConfigPage() {
   const [metaStatus, setMetaStatus] = useState<MetaStatus | null>(null)
   const [metaBusy, setMetaBusy] = useState(false)
   const [metaError, setMetaError] = useState<string | null>(null)
+  const [metaConnectionBusy, setMetaConnectionBusy] = useState(false)
+  const [metaOAuthSession, setMetaOAuthSession] = useState<MetaOAuthSession | null>(null)
+  const [metaAdAccounts, setMetaAdAccounts] = useState<MetaAdAccountOption[]>([])
+  const [metaTrackingAssets, setMetaTrackingAssets] = useState<MetaTrackingAssetOption[]>([])
+  const [metaAccountSelection, setMetaAccountSelection] = useState('')
+  const [metaAssetSelection, setMetaAssetSelection] = useState('')
+  const [metaEvents, setMetaEvents] = useState<MetaConversionEvent[]>([])
   const [companyName, setCompanyName] = useState('')
   const [newCompanyName, setNewCompanyName] = useState('')
   const [workspaceBusy, setWorkspaceBusy] = useState(false)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
-  const [metaAccountId, setMetaAccountId] = useState('')
-  const [metaDatasetId, setMetaDatasetId] = useState('')
-  const [metaToken, setMetaToken] = useState('')
-  const [integrationBusy, setIntegrationBusy] = useState<'meta' | 'uazapi' | null>(null)
+  const [integrationBusy, setIntegrationBusy] = useState<'uazapi' | null>(null)
   const [integrationError, setIntegrationError] = useState<string | null>(null)
   const [uazApiUrl, setUazApiUrl] = useState('https://api.uazapi.com')
   const [uazInstanceName, setUazInstanceName] = useState('funiltrack')
@@ -118,15 +131,63 @@ export default function ConfigPage() {
 
   useEffect(() => {
     if (isUsingMocks) return
-    void getMetaStatus()
-      .then((status) => {
+    let active = true
+    void Promise.all([getMetaStatus(), getMetaConversionEvents(8)])
+      .then(([status, events]) => {
+        if (!active) return
         setMetaStatus(status)
-        setMetaAccountId(status.adAccountId ?? '')
-        setMetaDatasetId(status.datasetId ?? '')
+        setMetaEvents(events)
       })
       .catch((error: unknown) => {
+        if (!active) return
         setMetaError(error instanceof Error ? error.message : 'Não foi possível consultar a Meta.')
       })
+    return () => {
+      active = false
+    }
+  }, [activeCompany?.id])
+
+  useEffect(() => {
+    if (isUsingMocks) return
+    const url = new URL(window.location.href)
+    const result = url.searchParams.get('meta_connect')
+    const sessionId = url.searchParams.get('meta_session')
+    if (!result) return
+
+    url.searchParams.delete('meta_connect')
+    url.searchParams.delete('meta_session')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+
+    if (result !== 'success' || !sessionId) {
+      setMetaError('A autorização da Meta não foi concluída. Nenhum ativo foi conectado.')
+      return
+    }
+
+    let active = true
+    setMetaConnectionBusy(true)
+    setMetaError(null)
+    void getMetaBusinessLoginAssets(sessionId)
+      .then(({ session, adAccounts }) => {
+        if (!active) return
+        setMetaOAuthSession(session)
+        setMetaAdAccounts(adAccounts)
+        setMetaTrackingAssets([])
+        setMetaAssetSelection('')
+        setMetaAccountSelection(adAccounts[0]?.id ?? '')
+        if (adAccounts.length === 0) {
+          setMetaError('A Meta não liberou nenhuma conta de anúncios nesta autorização.')
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        setMetaError(error instanceof Error ? error.message : 'Não foi possível carregar os ativos liberados pela Meta.')
+      })
+      .finally(() => {
+        if (active) setMetaConnectionBusy(false)
+      })
+    return () => {
+      active = false
+    }
   }, [activeCompany?.id])
 
   useEffect(() => {
@@ -140,7 +201,9 @@ export default function ConfigPage() {
     try {
       const range = syncRange()
       await syncMetaAds(range.from, range.to)
-      setMetaStatus(await getMetaStatus())
+      const [status, events] = await Promise.all([getMetaStatus(), getMetaConversionEvents(8)])
+      setMetaStatus(status)
+      setMetaEvents(events)
       await queryClient.invalidateQueries()
       toast('Campanhas e métricas da Meta sincronizadas.', 'success')
     } catch (error) {
@@ -242,22 +305,76 @@ export default function ConfigPage() {
     }
   }
 
-  const saveMeta = async () => {
-    setIntegrationBusy('meta')
-    setIntegrationError(null)
+  const connectMeta = async () => {
+    setMetaConnectionBusy(true)
+    setMetaError(null)
     try {
-      const status = await saveMetaIntegration({
-        adAccountId: metaAccountId,
-        ...(metaDatasetId.trim() ? { datasetId: metaDatasetId } : {}),
-        ...(metaToken.trim() ? { accessToken: metaToken } : {}),
-      })
-      setMetaStatus(status)
-      setMetaToken('')
-      toast('Credenciais Meta salvas neste workspace.', 'success')
+      const { authorizationUrl } = await startMetaBusinessLogin()
+      window.location.assign(authorizationUrl)
     } catch (error) {
-      setIntegrationError(error instanceof Error ? error.message : 'Não foi possível salvar a Meta.')
+      setMetaError(error instanceof Error ? error.message : 'Não foi possível iniciar a conexão Meta.')
+      setMetaConnectionBusy(false)
+    }
+  }
+
+  const loadMetaTrackingAssets = async (adAccountId: string) => {
+    setMetaAccountSelection(adAccountId)
+    setMetaAssetSelection('')
+    setMetaTrackingAssets([])
+    if (!metaOAuthSession || !adAccountId) return
+    setMetaConnectionBusy(true)
+    setMetaError(null)
+    try {
+      const { assets } = await getMetaBusinessLoginTrackingAssets(metaOAuthSession.id, adAccountId)
+      setMetaTrackingAssets(assets)
+      setMetaAssetSelection(assets[0]?.id ?? '')
+      if (assets.length === 0) {
+        setMetaError('Nenhum Pixel/Dataset de eventos foi liberado para esta conta. Volte à Meta e inclua o ativo de dados.')
+      }
+    } catch (error) {
+      setMetaError(error instanceof Error ? error.message : 'Não foi possível carregar os Pixels/Datasets desta conta.')
     } finally {
-      setIntegrationBusy(null)
+      setMetaConnectionBusy(false)
+    }
+  }
+
+  const finishMetaConnection = async () => {
+    if (!metaOAuthSession || !metaAccountSelection || !metaAssetSelection) return
+    setMetaConnectionBusy(true)
+    setMetaError(null)
+    try {
+      const result = await completeMetaBusinessLogin(metaOAuthSession.id, {
+        adAccountId: metaAccountSelection,
+        datasetId: metaAssetSelection,
+      })
+      setMetaStatus(result.status)
+      setMetaOAuthSession(null)
+      setMetaAdAccounts([])
+      setMetaTrackingAssets([])
+      setMetaAccountSelection('')
+      setMetaAssetSelection('')
+      setMetaEvents(await getMetaConversionEvents(8))
+      await queryClient.invalidateQueries()
+      toast('Meta conectada. Os eventos pendentes serão enviados automaticamente.', 'success')
+    } catch (error) {
+      setMetaError(error instanceof Error ? error.message : 'Não foi possível concluir a conexão Meta.')
+    } finally {
+      setMetaConnectionBusy(false)
+    }
+  }
+
+  const processMetaQueue = async () => {
+    setMetaBusy(true)
+    setMetaError(null)
+    try {
+      const result = await processMetaConversions(100)
+      setMetaEvents(await getMetaConversionEvents(8))
+      const suffix = result.failed > 0 ? ` ${result.failed} ainda aguardam nova tentativa.` : ''
+      toast(`${result.sent} evento(s) enviado(s) para a Meta.${suffix}`, result.failed > 0 ? 'warning' : 'success')
+    } catch (error) {
+      setMetaError(error instanceof Error ? error.message : 'Não foi possível processar a fila Meta.')
+    } finally {
+      setMetaBusy(false)
     }
   }
 
@@ -352,16 +469,135 @@ export default function ConfigPage() {
         >
           <div className="grid gap-5 lg:grid-cols-2">
             <div className="space-y-3 rounded-xl border border-border/70 bg-surface-2/40 p-3">
-              <div>
-                <p className="text-sm font-semibold text-text">Meta Ads</p>
-                <p className="mt-0.5 text-xs text-text-muted">Use a conta, Pixel/Dataset e token com permissão do cliente.</p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-text">Meta Ads + Eventos</p>
+                  <p className="mt-0.5 text-xs text-text-muted">O cliente autoriza os próprios ativos no login da Meta. Nenhum token, Pixel ou Dataset precisa ser copiado para cá.</p>
+                </div>
+                <span className={[
+                  'shrink-0 rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide',
+                  metaStatus?.configured ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface text-text-muted',
+                ].join(' ')}>
+                  {metaStatus?.configured ? 'conectada' : 'pendente'}
+                </span>
               </div>
-              <Input label="Conta de anúncios" placeholder="act_123456789" value={metaAccountId} onChange={(event) => setMetaAccountId(event.target.value)} />
-              <Input label="Pixel ou Dataset" placeholder="1715250949780818" value={metaDatasetId} onChange={(event) => setMetaDatasetId(event.target.value)} />
-              <Input label="Novo token Meta (opcional ao atualizar)" type="password" autoComplete="off" value={metaToken} onChange={(event) => setMetaToken(event.target.value)} />
-              <Button fullWidth variant="secondary" onClick={() => void saveMeta()} disabled={integrationBusy !== null || activeCompany?.role === 'member' || !metaAccountId.trim()}>
-                {integrationBusy === 'meta' ? 'Salvando Meta…' : 'Salvar Meta Ads'}
-              </Button>
+
+              {!metaStatus?.businessLoginConfigured && (
+                <p className="rounded-lg border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  A autorização global do FunilTrack ainda precisa ser finalizada no servidor. Isso é configurado uma única vez pela equipe da plataforma; o cliente não informa segredo nenhum.
+                </p>
+              )}
+
+              {metaStatus?.configured && !metaOAuthSession && (
+                <div className="grid gap-2 rounded-lg border border-border/70 bg-surface/60 p-3 text-xs">
+                  <p className="font-semibold text-text">{metaStatus.adAccountName ?? metaStatus.adAccountId}</p>
+                  <p className="text-text-muted">Conta de anúncios</p>
+                  <p className="font-semibold text-text">{metaStatus.datasetName ?? metaStatus.datasetId}</p>
+                  <p className="text-text-muted">Pixel/Dataset que recebe a Conversions API</p>
+                  <p className="text-text-muted">
+                    {metaStatus.connectionMethod === 'business_login' ? 'Conectado por autorização do cliente.' : 'Conexão legada; reconecte pelo login Meta para centralizar os ativos.'}
+                  </p>
+                </div>
+              )}
+
+              {metaOAuthSession ? (
+                <div className="space-y-3 rounded-lg border border-primary/35 bg-primary/5 p-3">
+                  <div>
+                    <p className="text-xs font-semibold text-text">Escolha os ativos liberados</p>
+                    <p className="mt-0.5 text-[11px] text-text-muted">Só aparecem contas e Pixels/Datasets que o cliente autorizou para este workspace.</p>
+                  </div>
+                  <label className="block text-xs font-medium text-text-muted">
+                    Conta de anúncios
+                    <select
+                      className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text"
+                      value={metaAccountSelection}
+                      onChange={(event) => void loadMetaTrackingAssets(event.target.value)}
+                      disabled={metaConnectionBusy || metaAdAccounts.length === 0}
+                    >
+                      <option value="">Selecione a conta</option>
+                      {metaAdAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>{account.name} · {account.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <Button
+                    fullWidth
+                    variant="secondary"
+                    onClick={() => void loadMetaTrackingAssets(metaAccountSelection)}
+                    disabled={metaConnectionBusy || !metaAccountSelection}
+                  >
+                    {metaTrackingAssets.length > 0 ? 'Atualizar Pixel/Dataset' : 'Carregar Pixel/Dataset'}
+                  </Button>
+                  <label className="block text-xs font-medium text-text-muted">
+                    Pixel/Dataset de eventos
+                    <select
+                      className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text"
+                      value={metaAssetSelection}
+                      onChange={(event) => setMetaAssetSelection(event.target.value)}
+                      disabled={metaConnectionBusy || metaTrackingAssets.length === 0}
+                    >
+                      <option value="">Selecione o Pixel/Dataset</option>
+                      {metaTrackingAssets.map((asset) => (
+                        <option key={asset.id} value={asset.id}>{asset.name} · {asset.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <Button
+                    fullWidth
+                    onClick={() => void finishMetaConnection()}
+                    disabled={metaConnectionBusy || !metaAccountSelection || !metaAssetSelection}
+                  >
+                    {metaConnectionBusy ? 'Concluindo conexão…' : 'Concluir conexão Meta'}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  fullWidth
+                  onClick={() => void connectMeta()}
+                  disabled={metaConnectionBusy || activeCompany?.role === 'member' || !metaStatus?.businessLoginConfigured}
+                >
+                  {metaConnectionBusy ? 'Abrindo Meta…' : metaStatus?.configured ? 'Conectar outros ativos Meta' : 'Conectar Meta'}
+                </Button>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void runMetaSync()}
+                  disabled={metaBusy || !metaStatus?.adsConfigured || activeCompany?.role === 'member'}
+                >
+                  {metaBusy ? 'Sincronizando…' : 'Sincronizar anúncios'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void processMetaQueue()}
+                  disabled={metaBusy || !metaStatus?.conversionsConfigured || activeCompany?.role === 'member'}
+                >
+                  {metaBusy ? 'Processando…' : 'Processar fila CAPI'}
+                </Button>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-surface/50 px-3 py-2">
+                <p className="text-[11px] font-semibold text-text">Últimos envios para a Meta</p>
+                {metaEvents.length === 0 ? (
+                  <p className="mt-1 text-[11px] text-text-muted">Quando chegar um lead ou ele mudar para qualificado/vendido, o status aparecerá aqui.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1.5">
+                    {metaEvents.slice(0, 4).map((event) => (
+                      <li key={event.id} className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="min-w-0 truncate text-text">{event.eventName} · {event.matching.ipVersion ?? 'sem IP'}</span>
+                        <span className={[
+                          'shrink-0 font-semibold uppercase',
+                          event.status === 'sent' ? 'text-accent' : event.status === 'failed' ? 'text-danger' : 'text-warning',
+                        ].join(' ')}>{event.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {metaError && <p className="text-xs text-danger">{metaError}</p>}
             </div>
             <div className="space-y-3 rounded-xl border border-border/70 bg-surface-2/40 p-3">
               <div>
@@ -474,40 +710,36 @@ export default function ConfigPage() {
         </div>
       </Card>
 
-      {/* Integração real da Meta Ads */}
+      {/* Auditoria real da Meta Ads */}
       {!isUsingMocks && (
         <Card
           neon
-          title="Meta Ads e conversões"
-          subtitle="Atribuição real: Insights das campanhas e eventos do funil enviados à Meta."
+          title="Retorno automático para a Meta"
+          subtitle="O FunilTrack cria Lead ao receber o contato e acrescenta QualifiedLead ou Purchase quando o estágio muda."
         >
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
               <div>
-                <p className="text-sm font-medium text-text">Marketing API</p>
+                <p className="text-sm font-medium text-text">Conversions API</p>
                 <p className="text-xs text-text-muted mt-0.5">
-                  {metaStatus?.adsConfigured
-                    ? `Conta ${metaStatus.adAccountId ?? 'configurada'}`
-                    : 'Ainda não configurada neste workspace'}
+                  {metaStatus?.conversionsConfigured
+                    ? `Destino: ${metaStatus.datasetName ?? metaStatus.datasetId ?? 'configurado'}`
+                    : 'Conecte os ativos Meta deste workspace para habilitar os envios.'}
                 </p>
               </div>
-              <span className={metaStatus?.adsConfigured ? 'text-xs font-semibold text-accent' : 'text-xs font-semibold text-warning'}>
-                {metaStatus?.adsConfigured ? 'Conectada' : 'Pendente'}
+              <span className={metaStatus?.conversionsConfigured ? 'text-xs font-semibold text-accent' : 'text-xs font-semibold text-warning'}>
+                {metaStatus?.conversionsConfigured ? 'Automática' : 'Pendente'}
               </span>
             </div>
             <p className="text-xs leading-5 text-text-muted">
-              Salve acima a conta, o token e o Pixel/Dataset deste cliente.
-              Para devolver Lead, QualifiedLead e Purchase à Meta, informe também o Pixel ou Dataset.
+              A fila é idempotente: repetir uma tentativa não duplica o evento. Em cada lead, a tela de detalhes mostra o IP (quando veio da origem first-party), os sinais de matching e o resultado de cada envio.
             </p>
             {metaStatus?.lastSyncAt && (
               <p className="text-[11px] text-text-muted">
                 Última sincronização: {new Date(metaStatus.lastSyncAt).toLocaleString('pt-BR')}
               </p>
             )}
-            {metaError && <p className="text-xs text-danger">{metaError}</p>}
-            <Button fullWidth variant="secondary" onClick={() => void runMetaSync()} disabled={metaBusy || !metaStatus?.adsConfigured}>
-              {metaBusy ? 'Sincronizando…' : 'Sincronizar anúncios agora'}
-            </Button>
+            <p className="text-[11px] text-text-muted">A Meta aceitar o evento não garante atribuição ao anúncio; ela ainda aplica as próprias regras de correspondência e atribuição.</p>
           </div>
         </Card>
       )}
