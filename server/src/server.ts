@@ -16,7 +16,9 @@ async function start(): Promise<void> {
   await runMigrations(pool)
   await cache.connect()
 
-  if (config.seedDemoData) {
+  // Nunca repopular um ambiente de produção com dados de demonstração,
+  // mesmo que SEED_DEMO_DATA tenha sido configurado incorretamente.
+  if (config.seedDemoData && config.nodeEnv !== 'production') {
     const summary = await seedDemoData(pool)
     if (!summary.skipped) {
       console.log(

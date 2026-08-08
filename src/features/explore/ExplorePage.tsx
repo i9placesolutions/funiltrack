@@ -28,6 +28,8 @@ import {
 } from '../_shared/labels'
 import {
   PERIOD_OPTIONS,
+  periodDescription,
+  periodLabel,
   periodRange,
   readPeriodDays,
   writePeriodDays,
@@ -323,7 +325,7 @@ export default function ExplorePage() {
             ))}
           </select>
           <div
-            className="grid grid-cols-3 gap-1 rounded-xl p-1 neon-panel sm:min-w-[250px]"
+            className="grid grid-cols-4 gap-1 rounded-xl p-1 neon-panel sm:min-w-[300px]"
             role="group"
             aria-label="Período de análise"
           >
@@ -340,7 +342,7 @@ export default function ExplorePage() {
                     : 'text-text-muted hover:bg-surface-2/70 hover:text-text',
                 ].join(' ')}
               >
-                {days} dias
+                {periodLabel(days)}
               </button>
             ))}
           </div>
@@ -464,7 +466,7 @@ export default function ExplorePage() {
             <Card
               neon
               title="Campanhas que puxam conversa"
-              subtitle={`${campaignRows.length} campanhas · ${period} dias analisados`}
+              subtitle={`${campaignRows.length} campanhas · ${periodDescription(period)}`}
               flush
               footer={
                 <Link to="/leads" className="text-sm font-medium text-primary">

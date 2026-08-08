@@ -29,7 +29,7 @@ import {
   STATUS_VARIANTS,
 } from '../_shared/labels'
 import { aggregateMetrics, dailySeries } from '../_shared/metrics'
-import { periodRange, readPeriodDays } from '../_shared/period'
+import { periodDescription, periodRange, readPeriodDays } from '../_shared/period'
 
 const TrendLineChart = lazy(
   () => import('../../components/charts/TrendLineChart'),
@@ -168,7 +168,7 @@ export default function CampaignDetailPage() {
           />
         </div>
         <p className="text-[11px] text-text-muted mt-1.5">
-          Últimos {periodDays} dias ({formatDate(range.from)} –{' '}
+          {periodDescription(periodDays)} ({formatDate(range.from)} –{' '}
           {formatDate(range.to)})
         </p>
       </section>

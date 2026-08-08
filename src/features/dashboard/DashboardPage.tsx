@@ -35,6 +35,8 @@ import {
   PERIOD_OPTIONS,
   periodRange,
   previousPeriodRange,
+  periodDescription,
+  periodLabel,
   readPeriodDays,
   writePeriodDays,
   type PeriodDays,
@@ -109,6 +111,7 @@ export default function DashboardPage() {
 
   const currentRange = useMemo(() => periodRange(period), [period])
   const previousRange = useMemo(() => previousPeriodRange(period), [period])
+  const previousQueryRange = previousRange ?? { from: '1970-01-01', to: '1970-01-01' }
 
   const metricsQuery = useQuery({
     queryKey: queryKeys.metrics.daily(currentRange),
@@ -116,8 +119,9 @@ export default function DashboardPage() {
     staleTime: staleTimes.metrics,
   })
   const previousMetricsQuery = useQuery({
-    queryKey: queryKeys.metrics.daily(previousRange),
-    queryFn: () => api.getDailyMetrics(previousRange),
+    queryKey: queryKeys.metrics.daily(previousQueryRange),
+    queryFn: () => api.getDailyMetrics(previousQueryRange),
+    enabled: Boolean(previousRange),
     staleTime: staleTimes.metrics,
   })
   const campaignsQuery = useQuery({
@@ -163,37 +167,37 @@ export default function DashboardPage() {
     {
       label: 'Gasto',
       value: formatBRL(current.spend),
-      delta: percentDelta(current.spend, previous.spend),
+      delta: previousRange ? percentDelta(current.spend, previous.spend) : null,
       goodWhen: 'down',
     },
     {
       label: 'Leads',
       value: formatNumber(current.leads),
-      delta: percentDelta(current.leads, previous.leads),
+      delta: previousRange ? percentDelta(current.leads, previous.leads) : null,
       goodWhen: 'up',
     },
     {
       label: 'CPL',
       value: formatBRL(current.cpl),
-      delta: percentDelta(current.cpl, previous.cpl),
+      delta: previousRange ? percentDelta(current.cpl, previous.cpl) : null,
       goodWhen: 'down',
     },
     {
       label: 'CTR',
       value: formatPercent(current.ctr),
-      delta: percentDelta(current.ctr, previous.ctr),
+      delta: previousRange ? percentDelta(current.ctr, previous.ctr) : null,
       goodWhen: 'up',
     },
     {
       label: 'CPC',
       value: formatBRL(current.cpc),
-      delta: percentDelta(current.cpc, previous.cpc),
+      delta: previousRange ? percentDelta(current.cpc, previous.cpc) : null,
       goodWhen: 'down',
     },
     {
       label: 'ROAS',
       value: `${formatNumber(Math.round(current.roas * 100) / 100)}×`,
-      delta: percentDelta(current.roas, previous.roas),
+      delta: previousRange ? percentDelta(current.roas, previous.roas) : null,
       goodWhen: 'up',
     },
   ]
@@ -211,11 +215,11 @@ export default function DashboardPage() {
 
   const isLoading =
     metricsQuery.isPending ||
-    previousMetricsQuery.isPending ||
+    (Boolean(previousRange) && previousMetricsQuery.isPending) ||
     campaignsQuery.isPending
   const hasError =
     metricsQuery.isError ||
-    previousMetricsQuery.isError ||
+    (Boolean(previousRange) && previousMetricsQuery.isError) ||
     campaignsQuery.isError
 
   return (
@@ -234,7 +238,7 @@ export default function DashboardPage() {
           </p>
         </div>
         <div
-          className="grid grid-cols-3 gap-1 p-1 neon-panel rounded-xl w-full lg:w-auto lg:min-w-[320px]"
+          className="grid grid-cols-4 gap-1 p-1 neon-panel rounded-xl w-full lg:w-auto lg:min-w-[360px]"
           role="group"
           aria-label="Período de análise"
         >
@@ -251,7 +255,7 @@ export default function DashboardPage() {
                   : 'text-text-muted hover:text-text hover:bg-surface-2/70',
               ].join(' ')}
             >
-              {days} dias
+              {periodLabel(days)}
             </button>
           ))}
         </div>
@@ -286,7 +290,7 @@ export default function DashboardPage() {
               neon
               className="lg:col-span-3"
               title="Custo e leads por dia"
-              subtitle={`Últimos ${period} dias`}
+              subtitle={periodDescription(period)}
             >
               <Suspense fallback={<Skeleton height="18rem" />}>
                 <TrendLineChart data={series} height={320} />
@@ -313,7 +317,7 @@ export default function DashboardPage() {
               neon
               className="lg:col-span-2"
               title="Gasto por campanha"
-              subtitle={`Últimos ${period} dias`}
+              subtitle={periodDescription(period)}
             >
               {donutData.length === 0 ? (
                 <EmptyState
