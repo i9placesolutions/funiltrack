@@ -158,11 +158,19 @@ function DesktopNavLink({ item, unreadAlerts }: { item: NavItem; unreadAlerts: n
 export function AppShell() {
   const unreadAlerts = useUnreadAlertCount()
   const navigate = useNavigate()
-  const { user, logout } = useApp()
+  const { user, companies, activeCompany, logout, selectCompany } = useApp()
 
   const signOut = async () => {
     await logout()
     navigate('/login', { replace: true })
+  }
+
+  const switchCompany = (companyId: string) => {
+    if (companyId === activeCompany?.id) return
+    selectCompany(companyId)
+    // Reinicia o cache de consultas para que nenhum card renderize dados do
+    // workspace anterior enquanto a nova empresa é carregada.
+    window.location.assign('/')
   }
 
   return (
@@ -176,6 +184,22 @@ export function AppShell() {
           <BrandMark />
         </div>
 
+        <div className="px-4 py-3 border-b border-border/60">
+          <label className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-text-muted" htmlFor="company-switcher">
+            Empresa ativa
+          </label>
+          <select
+            id="company-switcher"
+            value={activeCompany?.id ?? ''}
+            onChange={(event) => switchCompany(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs font-medium text-text outline-none focus:border-primary"
+          >
+            {companies.map((company) => (
+              <option key={company.id} value={company.id}>{company.name}</option>
+            ))}
+          </select>
+        </div>
+
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted">
             Menu
@@ -187,7 +211,7 @@ export function AppShell() {
 
         <div className="px-4 py-4 border-t border-border/60 flex items-center gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-text truncate">{user?.name ?? 'Workspace'}</p>
+            <p className="text-xs font-medium text-text truncate">{activeCompany?.name ?? 'Workspace'}</p>
             <p className="text-[11px] text-text-muted truncate">{user?.email ?? 'Ads + WhatsApp'}</p>
           </div>
           <div className="ml-auto flex items-center gap-1">
@@ -206,6 +230,18 @@ export function AppShell() {
           <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" aria-hidden="true" />
           <div className="flex items-center justify-between h-14 px-4">
             <BrandMark compact />
+            {companies.length > 1 && (
+              <select
+                aria-label="Empresa ativa"
+                value={activeCompany?.id ?? ''}
+                onChange={(event) => switchCompany(event.target.value)}
+                className="mx-3 min-w-0 flex-1 rounded-lg border border-border bg-surface px-2 py-1.5 text-xs font-medium text-text outline-none focus:border-primary"
+              >
+                {companies.map((company) => (
+                  <option key={company.id} value={company.id}>{company.name}</option>
+                ))}
+              </select>
+            )}
             <div className="flex items-center gap-1">
               <ThemeToggleButton />
               <button type="button" onClick={() => void signOut()} className="h-9 w-9 inline-flex items-center justify-center rounded-lg text-text-muted hover:text-danger hover:bg-danger/10" aria-label="Sair">

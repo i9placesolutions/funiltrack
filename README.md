@@ -58,6 +58,27 @@ pnpm preview    # serve o build localmente (PWA ativo só em produção)
 - **Fastify** + **PostgreSQL** (`pg`) + **Redis** (`ioredis`) no backend
 - **Dockerfile** único para frontend/API no Coolify
 
+## Empresas, acessos e isolamento de dados
+
+O FunilTrack funciona como uma plataforma **multiempresa**. Cada cadastro cria
+uma empresa (workspace) própria, e o usuário que a criou é o `owner`. O owner
+pode criar outros workspaces, convidar usuários já cadastrados e atribuir os
+papéis `owner`, `admin` ou `member`.
+
+Todas as consultas e escritas de campanhas, métricas, leads, alertas,
+conversas, eventos e conversões recebem o contexto da empresa no backend. O
+PostgreSQL reforça essa separação com `company_id`, chaves estrangeiras
+compostas e índices por empresa; trocar o identificador no navegador não dá
+acesso a outra empresa sem uma associação válida no banco.
+
+Há um único app central da Meta — o app **FunilTrack/i9Place**. Uma empresa
+cliente não precisa criar outro app da Meta: ela precisa conceder acesso aos
+ativos dela (conta de anúncios e Dataset/Pixel) e fornecer um token da Meta
+com as permissões necessárias. Em **Configurações → Integrações da empresa**,
+o owner ou admin informa os IDs e o token exclusivamente para aquele
+workspace. O token é criptografado no servidor e nunca é entregue ao
+navegador.
+
 ## Autenticação e WhatsApp UazAPI
 
 O acesso real da aplicação usa cadastro/login, cookie de sessão `httpOnly`,
@@ -74,11 +95,16 @@ Na rota **WhatsApp**, o backend chama a UazAPI sem expor o token ao navegador:
 - `POST /api/whatsapp/send/text` envia e grava a mensagem na timeline do lead;
 - `POST /api/whatsapp/uazapi-webhook` recebe eventos, deduplica e persiste mensagens.
 
-Configure `UAZAPI_BASE_URL` e `UAZAPI_TOKEN` no Coolify. Para criar uma
-instância pelo próprio painel, use também `UAZAPI_ADMIN_TOKEN` e uma
-`UAZAPI_ENCRYPTION_KEY` com pelo menos 32 caracteres. Para utilizar o n8n como
-ponte, importe os arquivos de `docs/n8n/` e só então preencha
-`N8N_UAZAPI_WEBHOOK_URL`.
+Para cada cliente, salve URL base, nome da instância e token da UazAPI em
+**Configurações → Integrações da empresa**. O backend registra uma URL de
+webhook exclusiva com segredo por empresa e armazena apenas o hash desse
+segredo. Assim, QR Code, mensagens e histórico de um WhatsApp não se misturam
+com os de outro cliente.
+
+No Coolify, defina `INTEGRATIONS_ENCRYPTION_KEY` (32+ caracteres) antes de
+salvar credenciais de clientes. `UAZAPI_BASE_URL` e `UAZAPI_TOKEN` servem
+apenas como bootstrap compatível da empresa inicial; `UAZAPI_ADMIN_TOKEN` é
+necessário somente para a plataforma criar instâncias na conta UazAPI dela.
 
 ## Meta Ads: rastreamento real de anúncios e conversões
 
@@ -89,16 +115,52 @@ Marketing API e grava o resultado em `campaigns`, `ad_sets`, `ads` e
 geram eventos idempotentes em `meta_conversion_events`; o workflow n8n pode
 processá-los pela Conversions API.
 
-No Coolify, configure no backend:
+### Matching da Conversions API
 
-- `META_ACCESS_TOKEN` e `META_AD_ACCOUNT_ID` para ler campanhas e métricas;
-- `META_DATASET_ID` (ou `META_PIXEL_ID`) para enviar `Lead`, `QualifiedLead` e
-  `Purchase` à Meta;
-- opcionalmente `META_TEST_EVENT_CODE` durante o teste no Events Manager.
+Cada evento `Lead`, `QualifiedLead` ou `Purchase` envia telefone normalizado
+em SHA-256 e um `external_id` SHA-256. Quando a origem tiver esses dados, o
+evento também envia sem hash os parâmetros oficiais de matching da Meta:
+`client_ip_address` (IPv4 ou IPv6), `client_user_agent`, `fbp`, `fbc` e
+`ctwa_clid`.
+
+O endpoint protegido de entrada de leads aceita estes campos opcionais:
+
+```json
+{
+  "clientIp": "2001:db8:85a3::8a2e:370:7334",
+  "clientUserAgent": "Mozilla/5.0 ...",
+  "fbp": "fb.1.1596403881668.1116446470",
+  "fbc": "fb.1.1554763741205.<fbclid>",
+  "ctwaClid": "..."
+}
+```
+
+O backend valida o IP antes de enviá-lo e aproveita IP/UA do próprio request
+somente se ele parecer uma requisição de navegador. Webhooks da UazAPI e do
+n8n não carregam o IP/UA real da pessoa que enviou uma mensagem, portanto eles
+**não** são usados como substitutos. A UazAPI preserva `ctwa_clid` e `fbclid`
+quando a referência os entrega; na ausência de `fbc`, o backend monta o valor
+no formato oficial a partir do `fbclid` recebido.
+
+O cliente que envia dados first-party é responsável por coletá-los com base
+legal/consentimento aplicável e por não encaminhar IP, cookies ou user-agent
+inventados. Isso melhora o Event Match Quality sem reportar dados errados.
+
+Para cada empresa, configure no painel os campos de conta de anúncios,
+Dataset/Pixel, token e, se necessário, código de evento de teste. As variáveis
+globais `META_*` do Coolify permanecem apenas como bootstrap compatível da
+empresa inicial i9Place; não devem ser usadas para cadastrar clientes novos.
+
+O app central da Meta deve estar vinculado ao Business da plataforma e ter as
+permissões/aprovações compatíveis com os ativos que serão lidos. Cada cliente
+concede acesso à própria conta de anúncios/Dataset/Pixel ou gera um token de
+usuário/sistema que já tenha esse acesso. A plataforma não consegue consultar
+ativos que o Business cliente não compartilhou.
 
 O token não é enviado ao navegador nem versionado. A rota autenticada
-`POST /api/meta/sync` sincroniza um período; o workflow agendado usa
-`POST /api/webhooks/meta/sync` com `WEBHOOK_TOKEN`. A configuração do app e do
+`POST /api/meta/sync` sincroniza o workspace selecionado; o workflow agendado
+usa `POST /api/webhooks/meta/sync` com `WEBHOOK_TOKEN` e processa todas as
+empresas que têm uma integração Meta habilitada. A configuração do app e do
 token é feita no Meta Developers/Business Manager; UazAPI continua sendo o
 canal de WhatsApp conectado por QR Code.
 

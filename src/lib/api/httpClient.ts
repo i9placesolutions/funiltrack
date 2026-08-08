@@ -16,17 +16,20 @@ import type {
   Lead,
   LeadStage,
 } from './types'
+import { getActiveCompanyId } from './authClient'
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 const API_TOKEN = import.meta.env.VITE_API_TOKEN?.trim()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const companyId = getActiveCompanyId()
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     credentials: 'include',
     headers: {
       Accept: 'application/json',
       ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+      ...(companyId ? { 'X-FunilTrack-Company-ID': companyId } : {}),
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers,
     },

@@ -23,6 +23,7 @@ interface SeedSummary {
 }
 
 const DATA_DIR = resolve(process.cwd(), 'src', 'mocks', 'data')
+const DEMO_COMPANY_ID = 'company_i9place'
 
 async function readDataset(fileName: string): Promise<JsonRecord[]> {
   const raw = await readFile(resolve(DATA_DIR, fileName), 'utf8')
@@ -111,6 +112,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
       client,
       'campaigns',
       [
+        'company_id',
         'id',
         'name',
         'status',
@@ -121,6 +123,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
         'end_date',
       ],
       campaigns.map((row) => [
+        DEMO_COMPANY_ID,
         asString(row.id),
         asString(row.name),
         asString(row.status),
@@ -136,6 +139,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
       client,
       'ad_sets',
       [
+        'company_id',
         'id',
         'campaign_id',
         'name',
@@ -146,6 +150,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
         'end_date',
       ],
       adSets.map((row) => [
+        DEMO_COMPANY_ID,
         asString(row.id),
         asString(row.campaignId) || null,
         asString(row.name),
@@ -161,6 +166,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
       client,
       'ads',
       [
+        'company_id',
         'id',
         'ad_set_id',
         'campaign_id',
@@ -171,6 +177,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
         'clicks',
       ],
       ads.map((row) => [
+        DEMO_COMPANY_ID,
         asString(row.id),
         asString(row.adSetId) || null,
         asString(row.campaignId) || null,
@@ -186,6 +193,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
       client,
       'daily_metrics',
       [
+        'company_id',
         'campaign_id',
         'metric_date',
         'impressions',
@@ -198,6 +206,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
         'roas',
       ],
       metrics.map((row) => [
+        DEMO_COMPANY_ID,
         asString(row.campaignId),
         asString(row.date),
         asNumber(row.impressions),
@@ -215,6 +224,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
       client,
       'leads',
       [
+        'company_id',
         'id',
         'name',
         'phone',
@@ -233,6 +243,7 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
       leads.map((row) => {
         const phone = asString(row.phone)
         return [
+          DEMO_COMPANY_ID,
           asString(row.id),
           asString(row.name),
           phone,
@@ -254,8 +265,9 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
     await insertBatch(
       client,
       'lead_events',
-      ['id', 'lead_id', 'type', 'text', 'occurred_at'],
+      ['company_id', 'id', 'lead_id', 'type', 'text', 'occurred_at'],
       events.map((event) => [
+        DEMO_COMPANY_ID,
         event.id,
         event.leadId,
         event.type,
@@ -267,8 +279,9 @@ export async function seedDemoData(pool: Pool): Promise<SeedSummary> {
     await insertBatch(
       client,
       'alerts',
-      ['id', 'type', 'severity', 'title', 'message', 'created_at', 'read', 'ref_id'],
+      ['company_id', 'id', 'type', 'severity', 'title', 'message', 'created_at', 'read', 'ref_id'],
       alerts.map((row) => [
+        DEMO_COMPANY_ID,
         asString(row.id),
         asString(row.type),
         asString(row.severity),

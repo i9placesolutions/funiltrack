@@ -16,11 +16,16 @@ import {
   type ReactNode,
 } from 'react'
 import {
-  getCurrentUser,
+  completeCompanyOnboarding as completeCompanyOnboardingRequest,
+  getActiveCompanyId,
+  getCurrentSession,
   login as loginRequest,
   logout as logoutRequest,
   register as registerRequest,
+  setActiveCompanyId,
+  type AuthSession,
   type AuthUser,
+  type CompanySummary,
 } from '../lib/api/authClient'
 
 const IS_MOCK_MODE = (import.meta.env.VITE_USE_MOCKS ?? 'false') === 'true'
@@ -37,15 +42,18 @@ export interface AppPreferences {
 export interface AppContextValue {
   authStatus: 'loading' | 'authenticated' | 'unauthenticated'
   user: AuthUser | null
+  companies: CompanySummary[]
+  activeCompany: CompanySummary | null
   login: (email: string, password: string) => Promise<AuthUser>
-  register: (name: string, email: string, password: string) => Promise<AuthUser>
+  register: (name: string, companyName: string, email: string, password: string) => Promise<AuthUser>
   logout: () => Promise<void>
   refreshAuth: () => Promise<AuthUser | null>
+  selectCompany: (companyId: string) => void
   themeMode: ThemeMode
   resolvedTheme: ResolvedTheme
   setThemeMode: (mode: ThemeMode) => void
   onboardingSeen: boolean
-  completeOnboarding: () => void
+  completeOnboarding: () => Promise<void>
   readAlertIds: string[]
   markAlertRead: (id: string) => void
   /** Esvazia a marcação local de alertas lidos (usado no reset demo). */
@@ -129,13 +137,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
   const [authStatus, setAuthStatus] = useState<AppContextValue['authStatus']>('loading')
   const [user, setUser] = useState<AuthUser | null>(null)
+  const [companies, setCompanies] = useState<CompanySummary[]>([])
+  const [activeCompanyId, setActiveCompanyIdState] = useState<string | null>(null)
+
+  const applySession = useCallback((session: AuthSession | null) => {
+    if (!session) {
+      setUser(null)
+      setCompanies([])
+      setActiveCompanyIdState(null)
+      setActiveCompanyId(null)
+      setAuthStatus('unauthenticated')
+      return null
+    }
+    const storedCompanyId = getActiveCompanyId()
+    const selectedCompanyId = session.companies.some((company) => company.id === storedCompanyId)
+      ? storedCompanyId
+      : session.activeCompanyId ?? session.companies[0]?.id ?? null
+    setUser(session.user)
+    setCompanies(session.companies)
+    setActiveCompanyIdState(selectedCompanyId)
+    setActiveCompanyId(selectedCompanyId)
+    setAuthStatus('authenticated')
+    return session.user
+  }, [])
 
   const refreshAuth = useCallback(async () => {
-    const currentUser = await getCurrentUser()
-    setUser(currentUser)
-    setAuthStatus(currentUser ? 'authenticated' : 'unauthenticated')
-    return currentUser
-  }, [])
+    return applySession(await getCurrentSession())
+  }, [applySession])
 
   useEffect(() => {
     if (IS_MOCK_MODE) {
@@ -145,7 +173,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
         email: 'demo@funiltrack.local',
         role: 'owner',
       }
+      const demoCompany: CompanySummary = {
+        id: 'company-demo',
+        name: 'Workspace demo',
+        slug: 'workspace-demo',
+        role: 'owner',
+        onboardingComplete: true,
+      }
       setUser(demoUser)
+      setCompanies([demoCompany])
+      setActiveCompanyIdState(demoCompany.id)
+      setActiveCompanyId(demoCompany.id)
       setAuthStatus('authenticated')
       return
     }
@@ -156,33 +194,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (IS_MOCK_MODE) {
       const demoUser: AuthUser = { id: 'demo-user', name: email.split('@')[0] || 'Workspace demo', email, role: 'owner' }
       setUser(demoUser)
+      setCompanies([{ id: 'company-demo', name: 'Workspace demo', slug: 'workspace-demo', role: 'owner', onboardingComplete: true }])
+      setActiveCompanyIdState('company-demo')
+      setActiveCompanyId('company-demo')
       setAuthStatus('authenticated')
       return demoUser
     }
-    const currentUser = await loginRequest(email, password)
-    setUser(currentUser)
-    setAuthStatus('authenticated')
-    return currentUser
-  }, [])
+    const session = await loginRequest(email, password)
+    return applySession(session) ?? session.user
+  }, [applySession])
 
-  const register = useCallback(async (name: string, email: string, password: string) => {
+  const register = useCallback(async (name: string, companyName: string, email: string, password: string) => {
     if (IS_MOCK_MODE) {
       const demoUser: AuthUser = { id: 'demo-user', name, email, role: 'owner' }
       setUser(demoUser)
+      setCompanies([{ id: 'company-demo', name: companyName, slug: 'workspace-demo', role: 'owner', onboardingComplete: false }])
+      setActiveCompanyIdState('company-demo')
+      setActiveCompanyId('company-demo')
       setAuthStatus('authenticated')
       return demoUser
     }
-    const currentUser = await registerRequest(name, email, password)
-    setUser(currentUser)
-    setAuthStatus('authenticated')
-    return currentUser
-  }, [])
+    const session = await registerRequest(name, companyName, email, password)
+    return applySession(session) ?? session.user
+  }, [applySession])
 
   const logout = useCallback(async () => {
     if (!IS_MOCK_MODE) await logoutRequest()
-    setUser(null)
-    setAuthStatus('unauthenticated')
-  }, [])
+    applySession(null)
+  }, [applySession])
 
   // Persiste preferências sempre que mudam.
   useEffect(() => {
@@ -208,9 +247,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPrefs((prev) => ({ ...prev, theme: mode }))
   }, [])
 
-  const completeOnboarding = useCallback(() => {
+  const selectCompany = useCallback((companyId: string) => {
+    if (!companies.some((company) => company.id === companyId)) return
+    setActiveCompanyId(companyId)
+    setActiveCompanyIdState(companyId)
+  }, [companies])
+
+  const completeOnboarding = useCallback(async () => {
+    if (!IS_MOCK_MODE) await completeCompanyOnboardingRequest()
+    setCompanies((previous) => previous.map((company) => (
+      company.id === activeCompanyId ? { ...company, onboardingComplete: true } : company
+    )))
     setPrefs((prev) => ({ ...prev, onboardingSeen: true }))
-  }, [])
+  }, [activeCompanyId])
+
+  const activeCompany = companies.find((company) => company.id === activeCompanyId) ?? null
 
   const markAlertRead = useCallback((id: string) => {
     setPrefs((prev) => {
@@ -239,10 +290,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       authStatus,
       user,
+      companies,
+      activeCompany,
       login,
       register,
       logout,
       refreshAuth,
+      selectCompany,
       themeMode: prefs.theme,
       resolvedTheme,
       setThemeMode,
@@ -255,10 +309,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       authStatus,
       user,
+      companies,
+      activeCompany,
       login,
       register,
       logout,
       refreshAuth,
+      selectCompany,
       prefs.theme,
       prefs.onboardingSeen,
       prefs.readAlertIds,

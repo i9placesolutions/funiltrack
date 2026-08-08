@@ -50,12 +50,12 @@ function withSuspense(Component: ComponentType): ReactElement {
 }
 
 /**
- * Guarda de onboarding: se o usuário ainda não viu o onboarding
- * (flag em localStorage via AppContext), redireciona para /onboarding.
+ * Guarda de onboarding por empresa. A conclusão fica no PostgreSQL, portanto
+ * trocar de workspace não reaproveita a configuração do cliente anterior.
  */
 function RequireOnboarding() {
-  const { onboardingSeen } = useApp()
-  if (!onboardingSeen) return <Navigate to="/onboarding" replace />
+  const { activeCompany } = useApp()
+  if (!activeCompany?.onboardingComplete) return <Navigate to="/onboarding" replace />
   return <Outlet />
 }
 

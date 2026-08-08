@@ -31,6 +31,7 @@ const envSchema = z.object({
   UAZAPI_ADMIN_TOKEN: z.string().trim().min(1).optional(),
   UAZAPI_INSTANCE_NAME: z.string().trim().min(1).max(80).default('funiltrack'),
   UAZAPI_ENCRYPTION_KEY: z.string().trim().min(32).optional(),
+  INTEGRATIONS_ENCRYPTION_KEY: z.string().trim().min(32).optional(),
   UAZAPI_WEBHOOK_SECRET: z.string().trim().min(16).optional(),
   META_GRAPH_API_BASE_URL: z.string().trim().url().default('https://graph.facebook.com'),
   META_GRAPH_API_VERSION: z.string().trim().min(1).default('v23.0'),
@@ -66,6 +67,7 @@ export interface AppConfig {
   uazapiAdminToken?: string
   uazapiInstanceName: string
   uazapiEncryptionKey?: string
+  integrationsEncryptionKey?: string
   uazapiWebhookSecret?: string
   metaGraphApiBaseUrl: string
   metaGraphApiVersion: string
@@ -113,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     uazapiAdminToken: parsed.UAZAPI_ADMIN_TOKEN,
     uazapiInstanceName: parsed.UAZAPI_INSTANCE_NAME,
     uazapiEncryptionKey: parsed.UAZAPI_ENCRYPTION_KEY,
+    integrationsEncryptionKey: parsed.INTEGRATIONS_ENCRYPTION_KEY,
     uazapiWebhookSecret: parsed.UAZAPI_WEBHOOK_SECRET,
     metaGraphApiBaseUrl: parsed.META_GRAPH_API_BASE_URL.replace(/\/$/, ''),
     metaGraphApiVersion: parsed.META_GRAPH_API_VERSION,

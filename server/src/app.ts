@@ -4,6 +4,7 @@ import fastifyStatic from '@fastify/static'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { resolve } from 'node:path'
 import type { Pool, PoolClient } from 'pg'
 import { z } from 'zod'
@@ -33,6 +34,7 @@ import {
   connectWhatsApp,
   createWhatsAppInstance,
   disconnectWhatsApp,
+  ensureCompanyUazApiWebhookSecret,
   ensureUazApiWebhookSecret,
   getWhatsAppState,
   normalizeUazApiEvent,
@@ -46,9 +48,28 @@ import {
   conversionEventForStage,
   enqueueMetaConversionEvent,
   getMetaStatus,
+  processAllPendingMetaConversions,
   processPendingMetaConversions,
+  syncAllMetaAds,
   syncMetaAds,
 } from './meta.js'
+import {
+  IntegrationConfigurationError,
+  saveMetaIntegration,
+  saveUazApiIntegration,
+} from './integrations.js'
+import {
+  addCompanyMember,
+  CompanyAccessError,
+  completeCompanyOnboarding,
+  createCompany,
+  listCompanyMembers,
+  listCompaniesForUser,
+  removeCompanyMember,
+  requireCompanyRole,
+  resolveCompanyContext,
+  updateCompanyName,
+} from './tenancy.js'
 
 const LEAD_STAGES = ['novo', 'contato', 'qualificado', 'vendido', 'perdido'] as const
 const ALERT_TYPES = [
@@ -90,6 +111,7 @@ const metricsQuerySchema = z.object({
 const stageBodySchema = z.object({ stage: z.enum(LEAD_STAGES) })
 
 const whatsappWebhookSchema = z.object({
+  companyId: z.string().trim().min(1).max(180).optional(),
   id: z.string().trim().min(1).max(180).optional(),
   leadId: z.string().trim().min(1).max(180).optional(),
   name: z.string().trim().min(1).max(180),
@@ -105,9 +127,17 @@ const whatsappWebhookSchema = z.object({
   utmCampaign: z.string().trim().max(120).optional(),
   ctwaClid: z.string().trim().max(240).optional(),
   fbclid: z.string().trim().max(240).optional(),
+  fbp: z.string().trim().max(600).optional(),
+  fbc: z.string().trim().max(800).optional(),
+  sourceUrl: z.string().trim().url().max(2_000).optional(),
+  // Estes dois campos devem vir do navegador do visitante ou do servidor
+  // first-party que recebeu o formulário; nunca da infraestrutura UazAPI/n8n.
+  clientIp: z.string().trim().max(64).optional(),
+  clientUserAgent: z.string().trim().max(1_024).optional(),
 })
 
 const alertWebhookSchema = z.object({
+  companyId: z.string().trim().min(1).max(180).optional(),
   id: z.string().trim().min(1).max(180).optional(),
   type: z.enum(ALERT_TYPES),
   severity: z.enum(ALERT_SEVERITIES),
@@ -119,6 +149,7 @@ const alertWebhookSchema = z.object({
 })
 
 const metricWebhookSchema = z.object({
+  companyId: z.string().trim().min(1).max(180).optional(),
   campaignId: z.string().trim().min(1).max(120),
   date: dateOnlySchema,
   impressions: z.coerce.number().int().min(0),
@@ -142,6 +173,7 @@ const metaConversionsProcessSchema = z.object({
 
 const authRegisterSchema = z.object({
   name: z.string().trim().min(2, 'Informe seu nome.').max(120),
+  companyName: z.string().trim().min(2, 'Informe o nome da empresa.').max(120).optional(),
   email: z.string().trim().email('Informe um e-mail válido.').max(240),
   password: z.string().min(1, 'Informe uma senha.').max(128),
 })
@@ -154,6 +186,34 @@ const authLoginSchema = z.object({
 const authChangePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Informe a senha atual.'),
   newPassword: z.string().min(1, 'Informe a nova senha.').max(128),
+})
+
+const companyCreateSchema = z.object({
+  name: z.string().trim().min(2, 'Informe o nome da empresa.').max(120),
+})
+
+const companyUpdateSchema = z.object({
+  name: z.string().trim().min(2, 'Informe o nome da empresa.').max(120),
+})
+
+const companyMemberSchema = z.object({
+  email: z.string().trim().email('Informe um e-mail válido.').max(240),
+  role: z.enum(['owner', 'admin', 'member']),
+})
+
+const metaIntegrationSchema = z.object({
+  adAccountId: z.string().trim().min(1, 'Informe a conta de anúncios.').max(120),
+  accessToken: z.string().trim().min(1).max(2_000).optional(),
+  datasetId: z.string().trim().max(120).optional(),
+  pixelId: z.string().trim().max(120).optional(),
+  currency: z.string().trim().length(3).optional(),
+  testEventCode: z.string().trim().max(240).optional(),
+})
+
+const uazApiIntegrationSchema = z.object({
+  baseUrl: z.string().trim().url('Informe a URL da UazAPI.'),
+  instanceName: z.string().trim().min(1, 'Informe o nome da instância.').max(80),
+  token: z.string().trim().min(1).max(2_000).optional(),
 })
 
 const dataDeletionRequestSchema = z.object({
@@ -302,14 +362,18 @@ function isIncoming(direction: 'incoming' | 'outgoing' | 'received' | 'sent'): b
 async function findExistingId(
   client: PoolClient,
   table: 'campaigns' | 'ad_sets' | 'ads',
+  companyId: string,
   value: string | undefined,
 ): Promise<string | null> {
   if (!value) return null
-  const result = await client.query<{ id: string }>(`select id from ${table} where id = $1`, [value])
+  const result = await client.query<{ id: string }>(
+    `select id from ${table} where company_id = $1 and id = $2`,
+    [companyId, value],
+  )
   return result.rows[0]?.id ?? null
 }
 
-async function fetchLeadById(queryable: Queryable, id: string): Promise<DbRow | null> {
+async function fetchLeadById(queryable: Queryable, companyId: string, id: string): Promise<DbRow | null> {
   const result = await queryable.query<DbRow>(
     `
       select
@@ -338,11 +402,11 @@ async function fetchLeadById(queryable: Queryable, id: string): Promise<DbRow | 
           '[]'::jsonb
         ) as timeline
       from leads l
-      left join lead_events e on e.lead_id = l.id
-      where l.id = $1
+      left join lead_events e on e.company_id = l.company_id and e.lead_id = l.id
+      where l.company_id = $1 and l.id = $2
       group by l.id
     `,
-    [id],
+    [companyId, id],
   )
   return result.rows[0] ?? null
 }
@@ -350,6 +414,61 @@ async function fetchLeadById(queryable: Queryable, id: string): Promise<DbRow | 
 function requestHeaderValue(request: FastifyRequest, name: string): string | undefined {
   const value = request.headers[name]
   return typeof value === 'string' ? value : undefined
+}
+
+interface LeadRequestContext {
+  clientIp?: string
+  clientUserAgent?: string
+}
+
+function normalizeClientIp(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const candidate = value.split(',')[0]?.trim() ?? ''
+  return isIP(candidate) ? candidate : undefined
+}
+
+function normalizeClientUserAgent(value: string | undefined): string | undefined {
+  const candidate = value?.trim().slice(0, 1_024)
+  return candidate || undefined
+}
+
+function looksLikeBrowserUserAgent(value: string | undefined): boolean {
+  return Boolean(value && /mozilla\/|applewebkit\/|chrome\/|safari\/|firefox\/|edg\//i.test(value))
+}
+
+/**
+ * Apenas usa o IP/UA do request quando ele realmente parece vir de um browser.
+ * Webhooks UazAPI e n8n não carregam o IP/UA do lead e não podem ser usados
+ * como substitutos: isso prejudicaria o matching da Meta.
+ */
+function leadRequestContext(request: FastifyRequest): LeadRequestContext {
+  const clientUserAgent = normalizeClientUserAgent(requestHeaderValue(request, 'user-agent'))
+  if (!looksLikeBrowserUserAgent(clientUserAgent)) return {}
+  return {
+    clientIp: normalizeClientIp(request.ip),
+    clientUserAgent,
+  }
+}
+
+function fbclidFromSourceUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  try {
+    return new URL(value).searchParams.get('fbclid')?.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function fbcFromAttribution(
+  fbc: string | undefined,
+  fbclid: string | undefined,
+  at: Date,
+): string | undefined {
+  if (fbc?.trim()) return fbc.trim()
+  if (!fbclid?.trim()) return undefined
+  // Formato oficial do _fbc quando a origem fornece fbclid e ainda não há
+  // cookie. O timestamp é o momento em que o clique/lead foi recebido.
+  return `fb.1.${at.getTime()}.${fbclid.trim()}`
 }
 
 function ensureWebhookAuth(request: FastifyRequest, config: AppConfig): void {
@@ -370,7 +489,9 @@ function corsOriginValue(config: AppConfig): boolean | string[] {
 }
 
 function providerErrorStatus(error: unknown): number {
+  if (error instanceof CompanyAccessError) return error.statusCode
   if (error instanceof UazApiConfigurationError) return 503
+  if (error instanceof IntegrationConfigurationError) return 503
   if (error instanceof UazApiError) return Math.max(400, Math.min(error.statusCode, 502))
   if (error instanceof MetaConfigurationError) return 503
   if (error instanceof MetaApiError) return Math.max(400, Math.min(error.statusCode, 502))
@@ -381,6 +502,8 @@ async function persistLeadMessage(
   pool: Pool,
   body: z.input<typeof whatsappWebhookSchema>,
   config: AppConfig,
+  companyId: string,
+  requestContext: LeadRequestContext = {},
 ): Promise<ReturnType<typeof mapLead>> {
   const phoneDigits = normalizePhone(body.phone)
   if (!phoneDigits) throw new NotFoundError('Telefone inválido.')
@@ -388,30 +511,40 @@ async function persistLeadMessage(
   const eventType = isIncoming(body.direction ?? 'incoming')
     ? 'mensagem_recebida'
     : 'mensagem_enviada'
+  const fbclid = body.fbclid ?? fbclidFromSourceUrl(body.sourceUrl)
+  const fbc = fbcFromAttribution(body.fbc, fbclid, at)
+  const clientIp = normalizeClientIp(body.clientIp) ?? requestContext.clientIp
+  const clientUserAgent = normalizeClientUserAgent(body.clientUserAgent) ?? requestContext.clientUserAgent
   const attribution = JSON.stringify({
     ...(body.utmSource ? { utmSource: body.utmSource } : {}),
     ...(body.utmMedium ? { utmMedium: body.utmMedium } : {}),
     ...(body.utmCampaign ? { utmCampaign: body.utmCampaign } : {}),
     ...(body.ctwaClid ? { ctwaClid: body.ctwaClid } : {}),
-    ...(body.fbclid ? { fbclid: body.fbclid } : {}),
+    ...(fbclid ? { fbclid } : {}),
+    ...(body.fbp ? { fbp: body.fbp } : {}),
+    ...(fbc ? { fbc } : {}),
+    ...(body.sourceUrl ? { sourceUrl: body.sourceUrl } : {}),
+    ...(clientIp ? { clientIp } : {}),
+    ...(clientUserAgent ? { clientUserAgent } : {}),
   })
   return withTransaction(pool, async (client) => {
     const existing = await client.query<{ id: string }>(
-      'select id from leads where phone_digits = $1 for update',
-      [phoneDigits],
+      'select id from leads where company_id = $1 and phone_digits = $2 for update',
+      [companyId, phoneDigits],
     )
     let leadId = existing.rows[0]?.id
     if (!leadId) {
       leadId = body.leadId ?? `lead_${randomUUID()}`
-      const campaignId = await findExistingId(client, 'campaigns', body.campaignId)
-      const adSetId = await findExistingId(client, 'ad_sets', body.adSetId)
-      const adId = await findExistingId(client, 'ads', body.adId)
+      const campaignId = await findExistingId(client, 'campaigns', companyId, body.campaignId)
+      const adSetId = await findExistingId(client, 'ad_sets', companyId, body.adSetId)
+      const adId = await findExistingId(client, 'ads', companyId, body.adId)
       await client.query(
         `insert into leads
-          (id, name, phone, phone_digits, stage, utm_source, utm_medium, utm_campaign,
+          (company_id, id, name, phone, phone_digits, stage, utm_source, utm_medium, utm_campaign,
            campaign_id, ad_set_id, ad_id, created_at, last_message_at, value_cents, attribution)
-         values ($1, $2, $3, $4, 'novo', $5, $6, $7, $8, $9, $10, $11, $11, 0, $12::jsonb)`,
+         values ($1, $2, $3, $4, $5, 'novo', $6, $7, $8, $9, $10, $11, $12, $12, 0, $13::jsonb)`,
         [
+          companyId,
           leadId,
           body.name,
           body.phone,
@@ -427,15 +560,15 @@ async function persistLeadMessage(
         ],
       )
       await client.query(
-        `insert into lead_events (id, lead_id, type, text, occurred_at)
-         values ($1, $2, 'lead_criado', 'Lead criado via webhook do WhatsApp', $3)`,
-        [`lead_event_${randomUUID()}`, leadId, at],
+        `insert into lead_events (company_id, id, lead_id, type, text, occurred_at)
+         values ($1, $2, $3, 'lead_criado', 'Lead criado via webhook do WhatsApp', $4)`,
+        [companyId, `lead_event_${randomUUID()}`, leadId, at],
       )
-      await enqueueMetaConversionEvent(client, leadId, 'Lead', at, 0, config.metaCurrency)
+      await enqueueMetaConversionEvent(client, companyId, leadId, 'Lead', at, 0, config.metaCurrency)
     } else {
-      const campaignId = await findExistingId(client, 'campaigns', body.campaignId)
-      const adSetId = await findExistingId(client, 'ad_sets', body.adSetId)
-      const adId = await findExistingId(client, 'ads', body.adId)
+      const campaignId = await findExistingId(client, 'campaigns', companyId, body.campaignId)
+      const adSetId = await findExistingId(client, 'ad_sets', companyId, body.adSetId)
+      const adId = await findExistingId(client, 'ads', companyId, body.adId)
       await client.query(
         `update leads
          set name = $1,
@@ -449,18 +582,18 @@ async function persistLeadMessage(
              ad_id = coalesce($9, ad_id),
              attribution = coalesce(attribution, '{}'::jsonb) || $10::jsonb,
              updated_at = now()
-         where id = $11`,
-        [body.name, body.phone, at, body.utmSource ?? '', body.utmMedium ?? '', body.utmCampaign ?? '', campaignId, adSetId, adId, attribution, leadId],
+         where company_id = $11 and id = $12`,
+        [body.name, body.phone, at, body.utmSource ?? '', body.utmMedium ?? '', body.utmCampaign ?? '', campaignId, adSetId, adId, attribution, companyId, leadId],
       )
     }
 
     await client.query(
-      `insert into lead_events (id, lead_id, type, text, occurred_at)
-       values ($1, $2, $3, $4, $5)
+      `insert into lead_events (company_id, id, lead_id, type, text, occurred_at)
+       values ($1, $2, $3, $4, $5, $6)
        on conflict (id) do nothing`,
-      [body.id ?? `lead_event_${randomUUID()}`, leadId, eventType, body.text, at],
+      [companyId, body.id ?? `lead_event_${randomUUID()}`, leadId, eventType, body.text, at],
     )
-    const saved = await fetchLeadById(client, leadId)
+    const saved = await fetchLeadById(client, companyId, leadId)
     if (!saved) throw new NotFoundError('Lead criado, mas não pôde ser lido.')
     return mapLead(saved)
   })
@@ -473,7 +606,9 @@ export interface AppDependencies {
 }
 
 export async function buildApp({ pool, cache, config }: AppDependencies): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true })
+  // Em produção o Coolify entrega X-Forwarded-For pelo proxy público. Em
+  // desenvolvimento não confiamos nesse header, evitando IPs forjados locais.
+  const app = Fastify({ logger: true, trustProxy: config.nodeEnv === 'production' })
 
   await app.register(fastifyCookie)
   await app.register(cors, {
@@ -504,10 +639,26 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     attachAuthUser(request, user)
   })
 
+  const authSessionPayload = async (
+    user: { id: unknown; name: unknown; email: unknown; role: unknown },
+    request?: FastifyRequest,
+  ) => {
+    const companies = await listCompaniesForUser(pool, String(user.id))
+    const requested = request ? requestHeaderValue(request, 'x-funiltrack-company-id') : undefined
+    const activeCompanyId = companies.some((company) => company.id === requested)
+      ? requested
+      : companies[0]?.id ?? null
+    return {
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      companies,
+      activeCompanyId,
+    }
+  }
+
   app.get('/api/auth/me', async (request, reply) => {
     const user = await getSessionUser(request, pool)
     if (!user) return jsonError(reply, 401, 'Sessão ausente ou expirada.')
-    return reply.send({ user })
+    return reply.send(await authSessionPayload(user, request))
   })
 
   app.post('/api/auth/register', async (request, reply) => {
@@ -523,16 +674,19 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const passwordHash = await hashPassword(body.password)
     const userId = `user_${randomUUID()}`
     try {
-      const result = await pool.query<Record<string, unknown>>(
-        `insert into users (id, name, email, password_hash, role)
-         values ($1, $2, $3, $4, $5)
-         returning id, name, email, role`,
-        [userId, body.name, email, passwordHash, alreadyHasUsers ? 'member' : 'owner'],
-      )
-      const user = result.rows[0]
+      const user = await withTransaction(pool, async (client) => {
+        const result = await client.query<Record<string, unknown>>(
+          `insert into users (id, name, email, password_hash, role)
+           values ($1, $2, $3, $4, $5)
+           returning id, name, email, role`,
+          [userId, body.name, email, passwordHash, alreadyHasUsers ? 'member' : 'owner'],
+        )
+        await createCompany(client, userId, body.companyName ?? `Workspace de ${body.name}`)
+        return result.rows[0]
+      })
       const token = await createSession(pool, userId, config)
       setSessionCookie(reply, token, config)
-      return reply.code(201).send({ user })
+      return reply.code(201).send(await authSessionPayload(user as { id: unknown; name: unknown; email: unknown; role: unknown }, request))
     } catch (error) {
       if (error instanceof Error && /users_email_lower_uidx|duplicate key/i.test(error.message)) {
         return jsonError(reply, 409, 'Este e-mail já está cadastrado.')
@@ -556,9 +710,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     await pool.query('update users set last_login_at = now(), updated_at = now() where id = $1', [row.id])
     const token = await createSession(pool, String(row.id), config)
     setSessionCookie(reply, token, config)
-    return reply.send({
-      user: { id: row.id, name: row.name, email: row.email, role: row.role },
-    })
+    return reply.send(await authSessionPayload(row as { id: unknown; name: unknown; email: unknown; role: unknown }, request))
   })
 
   app.post('/api/auth/logout', async (request, reply) => {
@@ -583,6 +735,92 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const token = await createSession(pool, user.id, config)
     setSessionCookie(reply, token, config)
     return reply.send({ ok: true })
+  })
+
+  app.get('/api/companies', async (request, reply) => {
+    const user = authUserFromRequest(request)
+    if (!user) return jsonError(reply, 401, 'Sessão ausente ou expirada.')
+    const companies = await listCompaniesForUser(pool, user.id)
+    return reply.send({ companies })
+  })
+
+  app.post('/api/companies', async (request, reply) => {
+    const user = authUserFromRequest(request)
+    if (!user) return jsonError(reply, 401, 'Sessão ausente ou expirada.')
+    const body = parseBody(companyCreateSchema, request.body, reply)
+    if (!body) return
+    const company = await createCompany(pool, user.id, body.name)
+    return reply.code(201).send({ company })
+  })
+
+  app.get('/api/company', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    return reply.send({ company })
+  })
+
+  app.patch('/api/company', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    requireCompanyRole(company, ['owner'])
+    const body = parseBody(companyUpdateSchema, request.body, reply)
+    if (!body) return
+    const updated = await updateCompanyName(pool, company.id, body.name)
+    return reply.send({ company: { ...updated, role: company.role } })
+  })
+
+  app.post('/api/company/onboarding/complete', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    requireCompanyRole(company, ['owner', 'admin'])
+    await completeCompanyOnboarding(pool, company.id)
+    return reply.send({ ok: true })
+  })
+
+  app.get('/api/company/members', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    return reply.send({ members: await listCompanyMembers(pool, company.id) })
+  })
+
+  app.post('/api/company/members', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    requireCompanyRole(company, ['owner'])
+    const body = parseBody(companyMemberSchema, request.body, reply)
+    if (!body) return
+    const member = await addCompanyMember(pool, company.id, body.email, body.role)
+    return reply.code(201).send({ member })
+  })
+
+  app.delete('/api/company/members/:userId', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    requireCompanyRole(company, ['owner'])
+    const params = request.params as { userId?: string }
+    if (!params.userId) return jsonError(reply, 400, 'Informe o membro a remover.')
+    await removeCompanyMember(pool, company.id, params.userId)
+    return reply.send({ ok: true })
+  })
+
+  app.put('/api/integrations/meta', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    requireCompanyRole(company, ['owner', 'admin'])
+    const body = parseBody(metaIntegrationSchema, request.body, reply)
+    if (!body) return
+    try {
+      await saveMetaIntegration(pool, config, company.id, body)
+      return reply.send(await getMetaStatus(pool, config, company.id))
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível salvar a Meta.')
+    }
+  })
+
+  app.put('/api/integrations/uazapi', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    requireCompanyRole(company, ['owner', 'admin'])
+    const body = parseBody(uazApiIntegrationSchema, request.body, reply)
+    if (!body) return
+    try {
+      await saveUazApiIntegration(pool, config, company.id, body)
+      return reply.send({ saved: true })
+    } catch (error) {
+      return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível salvar a UazAPI.')
+    }
   })
 
   app.post('/api/privacy/deletion-requests', async (request, reply) => {
@@ -631,9 +869,10 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     })
   })
 
-  app.get('/api/meta/status', async (_request, reply) => {
+  app.get('/api/meta/status', async (request, reply) => {
     try {
-      return reply.send(await getMetaStatus(pool, config))
+      const company = await resolveCompanyContext(request, pool, config)
+      return reply.send(await getMetaStatus(pool, config, company.id))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível consultar a Meta.')
     }
@@ -643,7 +882,9 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const body = parseBody(metaSyncSchema, request.body, reply)
     if (!body) return
     try {
-      const summary = await syncMetaAds(pool, config, body)
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      const summary = await syncMetaAds(pool, config, company.id, body)
       await cache.invalidate()
       return reply.send(summary)
     } catch (error) {
@@ -655,23 +896,28 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const body = parseBody(metaConversionsProcessSchema, request.body ?? {}, reply)
     if (!body) return
     try {
-      return reply.send(await processPendingMetaConversions(pool, config, body.limit ?? 25))
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      return reply.send(await processPendingMetaConversions(pool, config, company.id, body.limit ?? 25))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível processar conversões da Meta.')
     }
   })
 
-  app.get('/api/whatsapp/status', async (_request, reply) => {
+  app.get('/api/whatsapp/status', async (request, reply) => {
     try {
-      return reply.send(publicUazApiState(await getWhatsAppState(pool, config)))
+      const company = await resolveCompanyContext(request, pool, config)
+      return reply.send(publicUazApiState(await getWhatsAppState(pool, config, company.id)))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível consultar o WhatsApp.')
     }
   })
 
-  app.post('/api/whatsapp/instance', async (_request, reply) => {
+  app.post('/api/whatsapp/instance', async (request, reply) => {
     try {
-      return reply.code(201).send(await createWhatsAppInstance(pool, config))
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      return reply.code(201).send(await createWhatsAppInstance(pool, config, company.id))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível criar a instância UazAPI.')
     }
@@ -681,23 +927,29 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const body = parseBody(whatsappConnectSchema, request.body ?? {}, reply)
     if (!body) return
     try {
-      return reply.send(publicUazApiState(await connectWhatsApp(pool, config, body)))
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      return reply.send(publicUazApiState(await connectWhatsApp(pool, config, company.id, body)))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível iniciar a conexão.')
     }
   })
 
-  app.post('/api/whatsapp/disconnect', async (_request, reply) => {
+  app.post('/api/whatsapp/disconnect', async (request, reply) => {
     try {
-      return reply.send(publicUazApiState(await disconnectWhatsApp(pool, config)))
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      return reply.send(publicUazApiState(await disconnectWhatsApp(pool, config, company.id)))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível desconectar.')
     }
   })
 
-  app.post('/api/whatsapp/configure-webhook', async (_request, reply) => {
+  app.post('/api/whatsapp/configure-webhook', async (request, reply) => {
     try {
-      return reply.send(await configureWhatsAppWebhook(pool, config))
+      const company = await resolveCompanyContext(request, pool, config)
+      requireCompanyRole(company, ['owner', 'admin'])
+      return reply.send(await configureWhatsAppWebhook(pool, config, company.id))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível configurar o webhook UazAPI.')
     }
@@ -707,7 +959,8 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const body = parseBody(whatsappSendTextSchema, request.body, reply)
     if (!body) return
     try {
-      const providerResponse = await sendWhatsAppText(pool, config, body)
+      const company = await resolveCompanyContext(request, pool, config)
+      const providerResponse = await sendWhatsAppText(pool, config, company.id, body)
       const number = body.number.replace(/@(s\.whatsapp\.net|lid)$/i, '')
       if (!number.includes('@')) {
         const normalized = whatsappWebhookSchema.safeParse({
@@ -719,7 +972,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
           at: new Date().toISOString(),
         })
         if (normalized.success) {
-          await persistLeadMessage(pool, normalized.data, config)
+          await persistLeadMessage(pool, normalized.data, config, company.id)
           await cache.invalidate()
         }
       }
@@ -732,7 +985,8 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
   app.post('/api/whatsapp/uazapi-webhook', async (request, reply) => {
     if (!ensureUazApiWebhookSecret(request, config)) return jsonError(reply, 401, 'Webhook UazAPI não autorizado.')
     const event = normalizeUazApiEvent(request.body)
-    const inserted = await recordUazApiEvent(pool, event)
+    const companyId = 'company_i9place'
+    const inserted = await recordUazApiEvent(pool, companyId, event)
     if (inserted && event.isMessage && event.phone && event.text) {
       const normalized = whatsappWebhookSchema.safeParse({
         id: event.providerEventId ?? `uazapi_message_${randomUUID()}`,
@@ -744,39 +998,77 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
         adId: event.attribution.adId,
         ctwaClid: event.attribution.ctwaClid,
         fbclid: event.attribution.fbclid,
+        fbp: event.attribution.fbp,
+        fbc: event.attribution.fbc,
+        sourceUrl: event.attribution.sourceUrl,
       })
       if (normalized.success) {
-        await persistLeadMessage(pool, normalized.data, config)
+        await persistLeadMessage(pool, normalized.data, config, companyId)
         await cache.invalidate()
       }
     }
     return reply.send({ ok: true, duplicate: !inserted })
   })
 
-  app.get('/api/campaigns', async (_request, reply) => {
-    const cached = await cache.getJson<ReturnType<typeof mapCampaign>[]>('campaigns')
+  app.post('/api/whatsapp/uazapi-webhook/:companyId', async (request, reply) => {
+    const params = request.params as { companyId?: string }
+    const companyId = params.companyId ?? ''
+    if (!companyId || !(await ensureCompanyUazApiWebhookSecret(pool, companyId, request))) {
+      return jsonError(reply, 401, 'Webhook UazAPI não autorizado.')
+    }
+    const event = normalizeUazApiEvent(request.body)
+    const inserted = await recordUazApiEvent(pool, companyId, event)
+    if (inserted && event.isMessage && event.phone && event.text) {
+      const normalized = whatsappWebhookSchema.safeParse({
+        id: event.providerEventId ?? `uazapi_message_${randomUUID()}`,
+        name: event.name,
+        phone: event.phone,
+        text: event.text,
+        direction: event.direction,
+        at: event.at.toISOString(),
+        adId: event.attribution.adId,
+        ctwaClid: event.attribution.ctwaClid,
+        fbclid: event.attribution.fbclid,
+        fbp: event.attribution.fbp,
+        fbc: event.attribution.fbc,
+        sourceUrl: event.attribution.sourceUrl,
+      })
+      if (normalized.success) {
+        await persistLeadMessage(pool, normalized.data, config, companyId)
+        await cache.invalidate()
+      }
+    }
+    return reply.send({ ok: true, duplicate: !inserted })
+  })
+
+  app.get('/api/campaigns', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    const cacheNamespace = `company:${company.id}:campaigns`
+    const cached = await cache.getJson<ReturnType<typeof mapCampaign>[]>(cacheNamespace)
     if (cached) return reply.send(cached)
 
     const result = await pool.query<DbRow>(
       `select id, name, status, objective, daily_budget_cents, spend_cents, start_date, end_date
-       from campaigns order by created_at asc, id asc`,
+       from campaigns where company_id = $1 order by created_at asc, id asc`,
+      [company.id],
     )
     const campaigns = result.rows.map(mapCampaign)
-    await cache.setJson('campaigns', campaigns, 60)
+    await cache.setJson(cacheNamespace, campaigns, 60)
     return reply.send(campaigns)
   })
 
   app.get('/api/campaigns/:id', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
     const params = request.params as { id?: string }
     const id = params.id ?? ''
-    const cacheNamespace = `campaign:${encodeURIComponent(id)}`
+    const cacheNamespace = `company:${company.id}:campaign:${encodeURIComponent(id)}`
     const cached = await cache.getJson<ReturnType<typeof mapCampaign>>(cacheNamespace)
     if (cached) return reply.send(cached)
 
     const result = await pool.query<DbRow>(
       `select id, name, status, objective, daily_budget_cents, spend_cents, start_date, end_date
-       from campaigns where id = $1`,
-      [id],
+       from campaigns where company_id = $1 and id = $2`,
+      [company.id, id],
     )
     const campaign = result.rows[0]
     if (!campaign) return jsonError(reply, 404, 'Campanha não encontrada.')
@@ -786,15 +1078,16 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
   })
 
   app.get('/api/metrics/daily', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
     const query = parseQuery(metricsQuerySchema, request.query, reply)
     if (!query) return
 
-    const cacheNamespace = `metrics:${query.from}:${query.to}:${query.campaign_id ?? 'all'}`
+    const cacheNamespace = `company:${company.id}:metrics:${query.from}:${query.to}:${query.campaign_id ?? 'all'}`
     const cached = await cache.getJson<ReturnType<typeof mapMetric>[]>(cacheNamespace)
     if (cached) return reply.send(cached)
 
-    const values: unknown[] = [query.from, query.to]
-    const filters = ['metric_date between $1 and $2']
+    const values: unknown[] = [company.id, query.from, query.to]
+    const filters = ['company_id = $1', 'metric_date between $2 and $3']
     if (query.campaign_id) {
       values.push(query.campaign_id)
       filters.push(`campaign_id = $${values.length}`)
@@ -809,25 +1102,29 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     return reply.send(metrics)
   })
 
-  app.get('/api/leads/sources', async (_request, reply) => {
-    const cached = await cache.getJson<string[]>('lead-sources')
+  app.get('/api/leads/sources', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    const cacheNamespace = `company:${company.id}:lead-sources`
+    const cached = await cache.getJson<string[]>(cacheNamespace)
     if (cached) return reply.send(cached)
 
     const result = await pool.query<{ utm_source: string }>(
-      `select distinct utm_source from leads where utm_source <> '' order by utm_source asc`,
+      `select distinct utm_source from leads where company_id = $1 and utm_source <> '' order by utm_source asc`,
+      [company.id],
     )
     const sources = result.rows.map((row) => row.utm_source)
-    await cache.setJson('lead-sources', sources, 300)
+    await cache.setJson(cacheNamespace, sources, 300)
     return reply.send(sources)
   })
 
   app.get('/api/leads', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
     const query = parseQuery(leadListQuerySchema, request.query, reply)
     if (!query) return
     const page = query.page ?? 1
     const pageSize = query.page_size ?? 20
 
-    const cacheNamespace = `leads:${encodeURIComponent(JSON.stringify(query))}`
+    const cacheNamespace = `company:${company.id}:leads:${encodeURIComponent(JSON.stringify(query))}`
     const cached = await cache.getJson<{
       items: ReturnType<typeof mapLead>[]
       total: number
@@ -835,8 +1132,8 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     }>(cacheNamespace)
     if (cached) return reply.send(cached)
 
-    const values: unknown[] = []
-    const filters: string[] = []
+    const values: unknown[] = [company.id]
+    const filters: string[] = ['l.company_id = $1']
     const addFilter = (sql: string, value: unknown) => {
       values.push(value)
       filters.push(sql.replace('?', `$${values.length}`))
@@ -893,7 +1190,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
             '[]'::jsonb
           ) as timeline
         from leads l
-        left join lead_events e on e.lead_id = l.id
+        left join lead_events e on e.company_id = l.company_id and e.lead_id = l.id
         ${where}
         group by l.id
         order by l.created_at desc, l.id asc
@@ -913,13 +1210,14 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
   })
 
   app.get('/api/leads/:id', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
     const params = request.params as { id?: string }
     const id = params.id ?? ''
-    const cacheNamespace = `lead:${encodeURIComponent(id)}`
+    const cacheNamespace = `company:${company.id}:lead:${encodeURIComponent(id)}`
     const cached = await cache.getJson<ReturnType<typeof mapLead>>(cacheNamespace)
     if (cached) return reply.send(cached)
 
-    const row = await fetchLeadById(pool, id)
+    const row = await fetchLeadById(pool, company.id, id)
     if (!row) return jsonError(reply, 404, 'Lead não encontrado.')
     const lead = mapLead(row)
     await cache.setJson(cacheNamespace, lead, 30)
@@ -927,6 +1225,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
   })
 
   app.patch('/api/leads/:id/stage', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
     const params = request.params as { id?: string }
     const id = params.id ?? ''
     const body = parseBody(stageBodySchema, request.body, reply)
@@ -934,20 +1233,21 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     const lead = await withTransaction(pool, async (client) => {
       const current = await client.query<{ id: string; stage: string; value_cents: number }>(
-        'select id, stage, value_cents from leads where id = $1 for update',
-        [id],
+        'select id, stage, value_cents from leads where company_id = $1 and id = $2 for update',
+        [company.id, id],
       )
       if (!current.rows[0]) throw new NotFoundError('Lead não encontrado.')
 
       if (current.rows[0].stage !== body.stage) {
         await client.query(
-          `update leads set stage = $1, updated_at = now() where id = $2`,
-          [body.stage, id],
+          `update leads set stage = $1, updated_at = now() where company_id = $2 and id = $3`,
+          [body.stage, company.id, id],
         )
         await client.query(
-          `insert into lead_events (id, lead_id, type, text, occurred_at)
-           values ($1, $2, 'estagio_alterado', $3, now())`,
+          `insert into lead_events (company_id, id, lead_id, type, text, occurred_at)
+           values ($1, $2, $3, 'estagio_alterado', $4, now())`,
           [
+            company.id,
             `lead_event_${randomUUID()}`,
             id,
             `Estágio alterado para ${body.stage}`,
@@ -957,6 +1257,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
         if (conversionEvent) {
           await enqueueMetaConversionEvent(
             client,
+            company.id,
             id,
             conversionEvent,
             new Date(),
@@ -966,7 +1267,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
         }
       }
 
-      const updated = await fetchLeadById(client, id)
+      const updated = await fetchLeadById(client, company.id, id)
       if (!updated) throw new NotFoundError('Lead não encontrado.')
       return mapLead(updated)
     })
@@ -974,25 +1275,29 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     return reply.send(lead)
   })
 
-  app.get('/api/alerts', async (_request, reply) => {
-    const cached = await cache.getJson<ReturnType<typeof mapAlert>[]>('alerts')
+  app.get('/api/alerts', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
+    const cacheNamespace = `company:${company.id}:alerts`
+    const cached = await cache.getJson<ReturnType<typeof mapAlert>[]>(cacheNamespace)
     if (cached) return reply.send(cached)
 
     const result = await pool.query<DbRow>(
       `select id, type, severity, title, message, created_at, read, ref_id
-       from alerts order by created_at desc, id asc`,
+       from alerts where company_id = $1 order by created_at desc, id asc`,
+      [company.id],
     )
     const alerts = result.rows.map(mapAlert)
-    await cache.setJson('alerts', alerts, 30)
+    await cache.setJson(cacheNamespace, alerts, 30)
     return reply.send(alerts)
   })
 
   app.post('/api/alerts/:id/read', async (request, reply) => {
+    const company = await resolveCompanyContext(request, pool, config)
     const params = request.params as { id?: string }
     const result = await pool.query<DbRow>(
-      `update alerts set read = true where id = $1
+      `update alerts set read = true where company_id = $1 and id = $2
        returning id, type, severity, title, message, created_at, read, ref_id`,
-      [params.id ?? ''],
+      [company.id, params.id ?? ''],
     )
     const alert = result.rows[0]
     if (!alert) return jsonError(reply, 404, 'Alerta não encontrado.')
@@ -1009,7 +1314,13 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     const body = parseBody(whatsappWebhookSchema, request.body, reply)
     if (!body) return
-    const lead = await persistLeadMessage(pool, body, config)
+    const lead = await persistLeadMessage(
+      pool,
+      body,
+      config,
+      body.companyId ?? 'company_i9place',
+      leadRequestContext(request),
+    )
     await cache.invalidate()
     return reply.code(201).send(lead)
   })
@@ -1023,7 +1334,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const body = parseBody(metaSyncSchema, request.body, reply)
     if (!body) return
     try {
-      const summary = await syncMetaAds(pool, config, body)
+      const summary = await syncAllMetaAds(pool, config, body)
       await cache.invalidate()
       return reply.send(summary)
     } catch (error) {
@@ -1040,7 +1351,7 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     const body = parseBody(metaConversionsProcessSchema, request.body ?? {}, reply)
     if (!body) return
     try {
-      return reply.send(await processPendingMetaConversions(pool, config, body.limit ?? 25))
+      return reply.send(await processAllPendingMetaConversions(pool, config, body.limit ?? 25))
     } catch (error) {
       return jsonError(reply, providerErrorStatus(error), error instanceof Error ? error.message : 'Não foi possível processar conversões da Meta.')
     }
@@ -1055,10 +1366,11 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     const body = parseBody(alertWebhookSchema, request.body, reply)
     if (!body) return
+    const companyId = body.companyId ?? 'company_i9place'
     const id = body.id ?? `alert_${randomUUID()}`
     const result = await pool.query<DbRow>(
-      `insert into alerts (id, type, severity, title, message, created_at, read, ref_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8)
+      `insert into alerts (company_id, id, type, severity, title, message, created_at, read, ref_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        on conflict (id) do update set
          type = excluded.type,
          severity = excluded.severity,
@@ -1066,8 +1378,10 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
          message = excluded.message,
          created_at = excluded.created_at,
          ref_id = excluded.ref_id
+       where alerts.company_id = excluded.company_id
        returning id, type, severity, title, message, created_at, read, ref_id`,
       [
+        companyId,
         id,
         body.type,
         body.severity,
@@ -1091,10 +1405,11 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
 
     const body = parseBody(metricWebhookSchema, request.body, reply)
     if (!body) return
+    const companyId = body.companyId ?? 'company_i9place'
     const result = await pool.query<DbRow>(
       `insert into daily_metrics
-        (campaign_id, metric_date, impressions, clicks, spend_cents, leads, ctr, cpc_cents, cpl_cents, roas)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        (company_id, campaign_id, metric_date, impressions, clicks, spend_cents, leads, ctr, cpc_cents, cpl_cents, roas)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        on conflict (campaign_id, metric_date) do update set
          impressions = excluded.impressions,
          clicks = excluded.clicks,
@@ -1105,8 +1420,10 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
          cpl_cents = excluded.cpl_cents,
          roas = excluded.roas,
          updated_at = now()
+       where daily_metrics.company_id = excluded.company_id
        returning campaign_id, metric_date, impressions, clicks, spend_cents, leads, ctr, cpc_cents, cpl_cents, roas`,
       [
+        companyId,
         body.campaignId,
         body.date,
         body.impressions,
@@ -1129,6 +1446,9 @@ export async function buildApp({ pool, cache, config }: AppDependencies): Promis
     }
     if (error instanceof WebhookAuthError) {
       return jsonError(reply, 401, error.message)
+    }
+    if (error instanceof CompanyAccessError) {
+      return jsonError(reply, error.statusCode, error.message)
     }
     request.log.error({ err: error }, 'Falha não tratada na API')
     return jsonError(reply, 500, 'Erro interno do servidor.')

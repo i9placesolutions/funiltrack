@@ -2,6 +2,7 @@ import { config as loadDotenv } from 'dotenv'
 import { loadConfig } from './config.js'
 import { createPool, runMigrations } from './db.js'
 import { buildApp } from './app.js'
+import { bootstrapLegacyIntegrations } from './integrations.js'
 import { RedisCache } from './redis.js'
 import { seedDemoData } from './seed.js'
 
@@ -14,6 +15,7 @@ async function start(): Promise<void> {
   const cache = new RedisCache(config)
 
   await runMigrations(pool)
+  await bootstrapLegacyIntegrations(pool, config)
   await cache.connect()
 
   // Nunca repopular um ambiente de produção com dados de demonstração,

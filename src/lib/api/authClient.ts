@@ -5,6 +5,30 @@ export interface AuthUser {
   role: 'owner' | 'admin' | 'member'
 }
 
+export type CompanyRole = 'owner' | 'admin' | 'member'
+
+export interface CompanySummary {
+  id: string
+  name: string
+  slug: string
+  role: CompanyRole
+  onboardingComplete: boolean
+}
+
+export interface CompanyMember {
+  id: string
+  name: string
+  email: string
+  role: CompanyRole
+  createdAt: string
+}
+
+export interface AuthSession {
+  user: AuthUser
+  companies: CompanySummary[]
+  activeCompanyId: string | null
+}
+
 export interface WhatsAppStatus {
   configured: boolean
   instanceName: string
@@ -41,13 +65,34 @@ export interface MetaSyncSummary {
 }
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
+const ACTIVE_COMPANY_KEY = 'funiltrack:active-company-id'
+
+export function getActiveCompanyId(): string | null {
+  try {
+    const value = localStorage.getItem(ACTIVE_COMPANY_KEY)
+    return value && value.trim() ? value.trim() : null
+  } catch {
+    return null
+  }
+}
+
+export function setActiveCompanyId(companyId: string | null): void {
+  try {
+    if (companyId) localStorage.setItem(ACTIVE_COMPANY_KEY, companyId)
+    else localStorage.removeItem(ACTIVE_COMPANY_KEY)
+  } catch {
+    // Storage indisponível: o cabeçalho ficará no estado de React desta sessão.
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const companyId = getActiveCompanyId()
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     credentials: 'include',
     headers: {
       Accept: 'application/json',
+      ...(companyId ? { 'X-FunilTrack-Company-ID': companyId } : {}),
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers,
     },
@@ -66,33 +111,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-export async function getCurrentUser(): Promise<AuthUser | null> {
+export async function getCurrentSession(): Promise<AuthSession | null> {
   try {
-    const response = await request<{ user: AuthUser }>('/auth/me')
-    return response.user
+    return await request<AuthSession>('/auth/me')
   } catch {
     return null
   }
 }
 
-export async function login(email: string, password: string): Promise<AuthUser> {
-  const response = await request<{ user: AuthUser }>('/auth/login', {
+export async function getCurrentUser(): Promise<AuthUser | null> {
+  return (await getCurrentSession())?.user ?? null
+}
+
+export async function login(email: string, password: string): Promise<AuthSession> {
+  const response = await request<AuthSession>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   })
-  return response.user
+  return response
 }
 
 export async function register(
   name: string,
+  companyName: string,
   email: string,
   password: string,
-): Promise<AuthUser> {
-  const response = await request<{ user: AuthUser }>('/auth/register', {
+): Promise<AuthSession> {
+  const response = await request<AuthSession>('/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ name, email, password }),
+    body: JSON.stringify({ name, companyName, email, password }),
   })
-  return response.user
+  return response
 }
 
 export async function logout(): Promise<void> {
@@ -106,6 +155,68 @@ export async function changePassword(
   await request<{ ok: true }>('/auth/change-password', {
     method: 'POST',
     body: JSON.stringify({ currentPassword, newPassword }),
+  })
+}
+
+export async function createCompany(name: string): Promise<CompanySummary> {
+  const response = await request<{ company: CompanySummary }>('/companies', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+  return response.company
+}
+
+export async function updateCurrentCompany(name: string): Promise<CompanySummary> {
+  const response = await request<{ company: CompanySummary }>('/company', {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+  return response.company
+}
+
+export async function completeCompanyOnboarding(): Promise<void> {
+  await request<{ ok: true }>('/company/onboarding/complete', { method: 'POST' })
+}
+
+export async function getCompanyMembers(): Promise<CompanyMember[]> {
+  const response = await request<{ members: CompanyMember[] }>('/company/members')
+  return response.members
+}
+
+export async function addCompanyMember(email: string, role: CompanyRole): Promise<CompanyMember> {
+  const response = await request<{ member: CompanyMember }>('/company/members', {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  })
+  return response.member
+}
+
+export async function removeCompanyMember(userId: string): Promise<void> {
+  await request<{ ok: true }>(`/company/members/${encodeURIComponent(userId)}`, { method: 'DELETE' })
+}
+
+export async function saveMetaIntegration(input: {
+  adAccountId: string
+  accessToken?: string
+  datasetId?: string
+  pixelId?: string
+  currency?: string
+  testEventCode?: string
+}): Promise<MetaStatus> {
+  return request<MetaStatus>('/integrations/meta', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function saveUazApiIntegration(input: {
+  baseUrl: string
+  instanceName: string
+  token?: string
+}): Promise<{ saved: true }> {
+  return request<{ saved: true }>('/integrations/uazapi', {
+    method: 'PUT',
+    body: JSON.stringify(input),
   })
 }
 

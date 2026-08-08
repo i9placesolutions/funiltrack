@@ -44,6 +44,8 @@ export default function OnboardingPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [step, setStep] = useState(0)
+  const [finishBusy, setFinishBusy] = useState(false)
+  const [finishError, setFinishError] = useState<string | null>(null)
 
   // Estado compartilhado entre passos.
   const [metaStatus, setMetaStatus] = useState<ConnectionStatus>('idle')
@@ -94,9 +96,17 @@ export default function OnboardingPage() {
     }
   }, [])
 
-  const finish = () => {
-    completeOnboarding()
-    navigate('/', { replace: true })
+  const finish = async () => {
+    setFinishBusy(true)
+    setFinishError(null)
+    try {
+      await completeOnboarding()
+      navigate('/', { replace: true })
+    } catch (error) {
+      setFinishError(error instanceof Error ? error.message : 'Não foi possível concluir a configuração.')
+    } finally {
+      setFinishBusy(false)
+    }
   }
 
   const goToGoals = () => {
@@ -112,7 +122,7 @@ export default function OnboardingPage() {
       if (status.adsConfigured) setMetaStatus('connected')
       else {
         setMetaStatus('error')
-        setMetaError('Configure META_ACCESS_TOKEN e META_AD_ACCOUNT_ID no Coolify.')
+        setMetaError('Salve a conta e o token Meta nas Configurações deste workspace após concluir o onboarding.')
       }
     } catch (error) {
       setMetaStatus('error')
@@ -131,7 +141,7 @@ export default function OnboardingPage() {
       }
       if (!current.configured) {
         setWhatsStatus('error')
-        setWhatsError('Configure a UazAPI no Coolify antes de conectar o QR Code.')
+        setWhatsError('Salve a URL, a instância e o token UazAPI nas Configurações deste workspace antes de conectar o QR Code.')
         return
       }
       const next = await connectWhatsApp({ browser: 'auto' })
@@ -292,7 +302,7 @@ export default function OnboardingPage() {
                       pode ativar depois nas configurações do navegador.
                     </p>
                   )}
-                  <Button fullWidth variant="ghost" onClick={finish}>
+                  <Button fullWidth variant="ghost" onClick={() => void finish()} disabled={finishBusy}>
                     Pular por agora
                   </Button>
                 </div>
@@ -325,11 +335,12 @@ export default function OnboardingPage() {
           </Button>
         )}
         {step === 2 && (
-          <Button fullWidth size="lg" onClick={finish}>
-            Concluir e ir para o Dashboard
+          <Button fullWidth size="lg" onClick={() => void finish()} disabled={finishBusy}>
+            {finishBusy ? 'Salvando…' : 'Concluir e ir para o Dashboard'}
           </Button>
         )}
       </footer>
+      {finishError && <p className="mt-3 text-center text-xs text-danger">{finishError}</p>}
       </div>
     </div>
   )

@@ -164,7 +164,7 @@ export default function WhatsAppPage() {
             <div className="rounded-xl border border-warning/30 bg-warning/10 p-4">
               <p className="text-sm font-semibold text-text">A UazAPI ainda não está configurada</p>
               <p className="mt-1 text-xs leading-5 text-text-muted">
-                Adicione UAZAPI_TOKEN no ambiente do Coolify. Se preferir criar a instância por aqui, também configure UAZAPI_ADMIN_TOKEN e UAZAPI_ENCRYPTION_KEY no backend.
+                Salve a URL, o token e o nome da instância nas Configurações deste workspace. Se preferir criar a instância por aqui, o serviço também precisa ter UAZAPI_ADMIN_TOKEN configurado.
               </p>
               <Button className="mt-4" size="sm" onClick={() => void createInstance()} disabled={busy !== null}>
                 {busy === 'create' ? 'Criando…' : 'Criar instância pela API'}

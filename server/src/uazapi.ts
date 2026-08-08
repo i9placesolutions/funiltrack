@@ -1,14 +1,14 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  timingSafeEqual,
-} from 'node:crypto'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { FastifyRequest } from 'fastify'
 import type { Pool } from 'pg'
 import type { AppConfig } from './config.js'
+import {
+  getUazApiIntegration,
+  saveUazApiIntegration,
+  saveUazApiWebhookSecret,
+  verifyUazApiWebhookSecret,
+  type UazApiIntegrationConfig,
+} from './integrations.js'
 
 type JsonRecord = Record<string, unknown>
 
@@ -51,6 +51,8 @@ export interface NormalizedUazApiEvent {
     adId?: string
     ctwaClid?: string
     fbclid?: string
+    fbp?: string
+    fbc?: string
     sourceUrl?: string
     sourceType?: string
   }
@@ -59,7 +61,7 @@ export interface NormalizedUazApiEvent {
 
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as JsonRecord)
+    ? value as JsonRecord
     : null
 }
 
@@ -106,35 +108,6 @@ function toDate(value: unknown): Date {
   return new Date()
 }
 
-function keyFromConfig(config: AppConfig): Buffer {
-  if (!config.uazapiEncryptionKey) {
-    throw new UazApiConfigurationError(
-      'UAZAPI_ENCRYPTION_KEY é obrigatório para armazenar um token criado pela API.',
-    )
-  }
-  return createHash('sha256').update(config.uazapiEncryptionKey).digest()
-}
-
-function encryptToken(token: string, config: AppConfig): string {
-  const key = keyFromConfig(config)
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
-  const ciphertext = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return [iv, tag, ciphertext].map((part) => part.toString('base64url')).join('.')
-}
-
-function decryptToken(encoded: string, config: AppConfig): string {
-  const [ivText, tagText, ciphertextText] = encoded.split('.')
-  if (!ivText || !tagText || !ciphertextText) throw new UazApiConfigurationError('Token UazAPI armazenado inválido.')
-  const decipher = createDecipheriv('aes-256-gcm', keyFromConfig(config), Buffer.from(ivText, 'base64url'))
-  decipher.setAuthTag(Buffer.from(tagText, 'base64url'))
-  return Buffer.concat([
-    decipher.update(Buffer.from(ciphertextText, 'base64url')),
-    decipher.final(),
-  ]).toString('utf8')
-}
-
 function stringifyErrorPayload(payload: unknown): string {
   const record = asRecord(payload)
   const message = firstString(record?.message, record?.error, record?.response)
@@ -142,12 +115,12 @@ function stringifyErrorPayload(payload: unknown): string {
 }
 
 async function callUazApi<T>(
-  config: AppConfig,
+  baseUrl: string,
   token: string,
   path: string,
   options: { method?: 'GET' | 'POST' | 'DELETE'; body?: JsonRecord; admin?: boolean } = {},
 ): Promise<T> {
-  const response = await fetch(`${config.uazapiBaseUrl}${path}`, {
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
     method: options.method ?? 'GET',
     headers: {
       Accept: 'application/json',
@@ -156,24 +129,15 @@ async function callUazApi<T>(
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   })
-  const text = await response.text()
+  const raw = await response.text()
   let payload: unknown = null
   try {
-    payload = text ? JSON.parse(text) : null
+    payload = raw ? JSON.parse(raw) : null
   } catch {
     payload = null
   }
   if (!response.ok) throw new UazApiError(stringifyErrorPayload(payload), response.status)
   return payload as T
-}
-
-async function getToken(pool: Pool, config: AppConfig): Promise<string | null> {
-  const result = await pool.query<{ token_encrypted: string | null }>(
-    `select token_encrypted from whatsapp_instances where id = 'default'`,
-  )
-  const encrypted = result.rows[0]?.token_encrypted
-  if (encrypted) return decryptToken(encrypted, config)
-  return config.uazapiToken ?? null
 }
 
 function stateFromPayload(payload: unknown, existingName: string): Omit<WhatsAppState, 'configured'> {
@@ -205,18 +169,18 @@ function stateFromPayload(payload: unknown, existingName: string): Omit<WhatsApp
 
 async function persistState(
   pool: Pool,
-  config: AppConfig,
+  companyId: string,
+  integration: UazApiIntegrationConfig,
   state: Omit<WhatsAppState, 'configured'>,
-  options: { error?: string | null; tokenEncrypted?: string | null } = {},
+  error?: string | null,
 ): Promise<WhatsAppState> {
   await pool.query(
     `insert into whatsapp_instances
-      (id, provider, name, token_encrypted, status, qrcode, paircode, jid, profile_name,
+      (id, company_id, provider, name, status, qrcode, paircode, jid, profile_name,
        profile_pic_url, last_error, updated_at)
-     values ('default', 'uazapi', $1, $2, $3, $4, $5, $6, $7, $8, $9, now())
-     on conflict (id) do update set
+     values ($1, $2, 'uazapi', $3, $4, $5, $6, $7, $8, $9, $10, now())
+     on conflict (company_id, provider) do update set
        name = excluded.name,
-       token_encrypted = coalesce(excluded.token_encrypted, whatsapp_instances.token_encrypted),
        status = excluded.status,
        qrcode = excluded.qrcode,
        paircode = excluded.paircode,
@@ -226,128 +190,145 @@ async function persistState(
        last_error = excluded.last_error,
        updated_at = now()`,
     [
-      state.instanceName || config.uazapiInstanceName,
-      options.tokenEncrypted ?? null,
+      `whatsapp_${companyId}`,
+      companyId,
+      state.instanceName || integration.instanceName,
       state.status,
       state.qrcode,
       state.paircode,
       state.jid,
       state.profileName,
       state.profilePicUrl,
-      options.error === undefined ? state.lastError : options.error,
+      error === undefined ? state.lastError : error,
     ],
   )
   return {
     configured: true,
     ...state,
-    lastError: options.error === undefined ? state.lastError : options.error,
+    lastError: error === undefined ? state.lastError : error,
   }
 }
 
-export async function getWhatsAppState(pool: Pool, config: AppConfig): Promise<WhatsAppState> {
-  const local = await pool.query<Record<string, unknown>>(
+async function localState(pool: Pool, companyId: string): Promise<Record<string, unknown> | undefined> {
+  const result = await pool.query<Record<string, unknown>>(
     `select name, status, qrcode, paircode, jid, profile_name, profile_pic_url, last_error, updated_at
-       from whatsapp_instances where id = 'default'`,
+       from whatsapp_instances
+      where company_id = $1 and provider = 'uazapi'`,
+    [companyId],
   )
-  const row = local.rows[0]
-  const token = await getToken(pool, config)
-  if (!token) {
+  return result.rows[0]
+}
+
+export async function getWhatsAppState(pool: Pool, config: AppConfig, companyId: string): Promise<WhatsAppState> {
+  const [local, integration] = await Promise.all([
+    localState(pool, companyId),
+    getUazApiIntegration(pool, config, companyId),
+  ])
+  if (!integration.token) {
     return {
       configured: false,
-      instanceName: firstString(row?.name, config.uazapiInstanceName) || config.uazapiInstanceName,
-      status: firstString(row?.status, 'not_configured'),
+      instanceName: firstString(local?.name, integration.instanceName) || integration.instanceName,
+      status: firstString(local?.status, 'not_configured'),
       connected: false,
       loggedIn: false,
-      jid: firstString(row?.jid) || null,
-      qrcode: firstString(row?.qrcode) || null,
-      paircode: firstString(row?.paircode) || null,
-      profileName: firstString(row?.profile_name) || null,
-      profilePicUrl: firstString(row?.profile_pic_url) || null,
-      lastError: firstString(row?.last_error) || null,
-      updatedAt: row?.updated_at ? new Date(String(row.updated_at)).toISOString() : null,
+      jid: firstString(local?.jid) || null,
+      qrcode: firstString(local?.qrcode) || null,
+      paircode: firstString(local?.paircode) || null,
+      profileName: firstString(local?.profile_name) || null,
+      profilePicUrl: firstString(local?.profile_pic_url) || null,
+      lastError: firstString(local?.last_error) || null,
+      updatedAt: local?.updated_at ? new Date(String(local.updated_at)).toISOString() : null,
     }
   }
-  const payload = await callUazApi<JsonRecord>(config, token, '/instance/status')
-  const state = stateFromPayload(payload, config.uazapiInstanceName)
-  return persistState(pool, config, state)
+  const payload = await callUazApi<JsonRecord>(integration.baseUrl, integration.token, '/instance/status')
+  return persistState(pool, companyId, integration, stateFromPayload(payload, integration.instanceName))
 }
 
 export async function connectWhatsApp(
   pool: Pool,
   config: AppConfig,
+  companyId: string,
   body: JsonRecord,
 ): Promise<WhatsAppState> {
-  const token = await getToken(pool, config)
-  if (!token) throw new UazApiConfigurationError('Configure UAZAPI_TOKEN ou crie a instância com UAZAPI_ADMIN_TOKEN.')
-  const payload = await callUazApi<JsonRecord>(config, token, '/instance/connect', {
+  const integration = await getUazApiIntegration(pool, config, companyId)
+  if (!integration.token) throw new UazApiConfigurationError('Configure o token UazAPI desta empresa antes de gerar o QR Code.')
+  const payload = await callUazApi<JsonRecord>(integration.baseUrl, integration.token, '/instance/connect', {
     method: 'POST',
     body,
   })
-  const state = stateFromPayload(payload, config.uazapiInstanceName)
-  return persistState(pool, config, state)
+  return persistState(pool, companyId, integration, stateFromPayload(payload, integration.instanceName))
 }
 
-export async function disconnectWhatsApp(pool: Pool, config: AppConfig): Promise<WhatsAppState> {
-  const token = await getToken(pool, config)
-  if (!token) throw new UazApiConfigurationError('WhatsApp ainda não está configurado.')
-  const payload = await callUazApi<JsonRecord>(config, token, '/instance/disconnect', { method: 'POST' })
-  return persistState(pool, config, stateFromPayload(payload, config.uazapiInstanceName))
+export async function disconnectWhatsApp(pool: Pool, config: AppConfig, companyId: string): Promise<WhatsAppState> {
+  const integration = await getUazApiIntegration(pool, config, companyId)
+  if (!integration.token) throw new UazApiConfigurationError('WhatsApp ainda não está configurado nesta empresa.')
+  const payload = await callUazApi<JsonRecord>(integration.baseUrl, integration.token, '/instance/disconnect', { method: 'POST' })
+  return persistState(pool, companyId, integration, stateFromPayload(payload, integration.instanceName))
 }
 
 export async function sendWhatsAppText(
   pool: Pool,
   config: AppConfig,
+  companyId: string,
   body: JsonRecord,
 ): Promise<JsonRecord> {
-  const token = await getToken(pool, config)
-  if (!token) throw new UazApiConfigurationError('Configure a UazAPI antes de enviar mensagens.')
-  return callUazApi<JsonRecord>(config, token, '/send/text', { method: 'POST', body })
+  const integration = await getUazApiIntegration(pool, config, companyId)
+  if (!integration.token) throw new UazApiConfigurationError('Configure a UazAPI desta empresa antes de enviar mensagens.')
+  return callUazApi<JsonRecord>(integration.baseUrl, integration.token, '/send/text', { method: 'POST', body })
 }
 
 export async function configureWhatsAppWebhook(
   pool: Pool,
   config: AppConfig,
+  companyId: string,
 ): Promise<{ configured: boolean; urlPath: string }> {
-  const token = await getToken(pool, config)
-  if (!token) throw new UazApiConfigurationError('Configure a UazAPI antes de configurar o webhook.')
-  if (!config.appPublicUrl) throw new UazApiConfigurationError('APP_PUBLIC_URL precisa ser configurada para registrar o webhook.')
-  const secret = config.uazapiWebhookSecret ?? config.webhookToken
-  if (!secret) throw new UazApiConfigurationError('Configure UAZAPI_WEBHOOK_SECRET ou WEBHOOK_TOKEN antes do webhook.')
-  const configuredTarget = config.n8nUazapiWebhookUrl
-    ? new URL(config.n8nUazapiWebhookUrl)
-    : new URL('/api/whatsapp/uazapi-webhook', config.appPublicUrl)
-  configuredTarget.searchParams.set('secret', secret)
-  await callUazApi(config, token, '/webhook', {
+  const integration = await getUazApiIntegration(pool, config, companyId)
+  if (!integration.token) throw new UazApiConfigurationError('Configure a UazAPI desta empresa antes do webhook.')
+  if (!config.appPublicUrl) throw new UazApiConfigurationError('APP_PUBLIC_URL precisa estar configurada para registrar o webhook.')
+  const secret = randomBytes(32).toString('base64url')
+  const target = new URL(`/api/whatsapp/uazapi-webhook/${encodeURIComponent(companyId)}`, config.appPublicUrl)
+  target.searchParams.set('secret', secret)
+  await callUazApi(integration.baseUrl, integration.token, '/webhook', {
     method: 'POST',
     body: {
       enabled: true,
-      url: configuredTarget.toString(),
+      url: target.toString(),
       events: ['messages', 'messages_update', 'connection', 'history'],
       excludeMessages: ['wasSentByApi'],
       addUrlEvents: false,
       addUrlTypesMessages: false,
     },
   })
-  return { configured: true, urlPath: configuredTarget.pathname }
+  await saveUazApiWebhookSecret(pool, companyId, secret)
+  return { configured: true, urlPath: target.pathname }
 }
 
 export async function createWhatsAppInstance(
   pool: Pool,
   config: AppConfig,
+  companyId: string,
 ): Promise<{ created: boolean; instanceName: string }> {
-  if (!config.uazapiAdminToken) throw new UazApiConfigurationError('UAZAPI_ADMIN_TOKEN não configurado.')
-  keyFromConfig(config)
-  const payload = await callUazApi<JsonRecord>(config, config.uazapiAdminToken, '/instance/create', {
+  if (!config.uazapiAdminToken) throw new UazApiConfigurationError('UAZAPI_ADMIN_TOKEN não configurado no serviço.')
+  const integration = await getUazApiIntegration(pool, config, companyId)
+  const payload = await callUazApi<JsonRecord>(integration.baseUrl, config.uazapiAdminToken, '/instance/create', {
     method: 'POST',
     admin: true,
-    body: { name: config.uazapiInstanceName },
+    body: { name: integration.instanceName },
   })
   const instance = asRecord(payload.instance) ?? {}
   const token = firstString(payload.token, instance.token)
   if (!token) throw new UazApiError('A UazAPI não retornou o token da instância.')
-  const state = stateFromPayload(payload, config.uazapiInstanceName)
-  await persistState(pool, config, state, { tokenEncrypted: encryptToken(token, config) })
-  return { created: true, instanceName: state.instanceName }
+  const state = stateFromPayload(payload, integration.instanceName)
+  const savedIntegration = {
+    baseUrl: integration.baseUrl,
+    instanceName: state.instanceName,
+    token,
+  }
+  await saveUazApiIntegration(pool, config, companyId, savedIntegration)
+  return {
+    created: true,
+    instanceName: (await persistState(pool, companyId, savedIntegration, state)).instanceName,
+  }
 }
 
 function timingSafeSecret(left: string, right: string): boolean {
@@ -356,12 +337,28 @@ function timingSafeSecret(left: string, right: string): boolean {
   return timingSafeEqual(leftHash, rightHash)
 }
 
+/** Compatibilidade para a URL global antiga da i9Place. Novas empresas usam
+ * o endpoint com companyId e um segredo exclusivo armazenado em hash. */
 export function ensureUazApiWebhookSecret(request: FastifyRequest, config: AppConfig): boolean {
   const expected = config.uazapiWebhookSecret ?? config.webhookToken
   if (!expected) return false
   const query = request.query as { secret?: unknown }
   const supplied = typeof query?.secret === 'string' ? query.secret : request.headers['x-uazapi-webhook-secret']
   return typeof supplied === 'string' && timingSafeSecret(supplied, expected)
+}
+
+export async function ensureCompanyUazApiWebhookSecret(
+  pool: Pool,
+  companyId: string,
+  request: FastifyRequest,
+): Promise<boolean> {
+  const query = request.query as { secret?: unknown }
+  const supplied = typeof query?.secret === 'string'
+    ? query.secret
+    : typeof request.headers['x-uazapi-webhook-secret'] === 'string'
+      ? request.headers['x-uazapi-webhook-secret']
+      : undefined
+  return verifyUazApiWebhookSecret(pool, companyId, supplied)
 }
 
 export function normalizeUazApiEvent(payload: unknown): NormalizedUazApiEvent {
@@ -415,8 +412,10 @@ export function normalizeUazApiEvent(payload: unknown): NormalizedUazApiEvent {
     ...(firstString(referral?.source_id) ? { adId: firstString(referral?.source_id) } : {}),
     ...(firstString(referral?.ctwa_clid, referral?.ctwaClid) ? { ctwaClid: firstString(referral?.ctwa_clid, referral?.ctwaClid) } : {}),
     ...(firstString(referral?.fbclid) ? { fbclid: firstString(referral?.fbclid) } : {}),
+    ...(firstString(referral?.fbp, referral?._fbp) ? { fbp: firstString(referral?.fbp, referral?._fbp) } : {}),
+    ...(firstString(referral?.fbc, referral?._fbc) ? { fbc: firstString(referral?.fbc, referral?._fbc) } : {}),
     ...(firstString(referral?.source_url, referral?.sourceUrl) ? { sourceUrl: firstString(referral?.source_url, referral?.sourceUrl) } : {}),
-    ...(firstString(referral?.source_type, referral?.sourceType) ? { sourceType: firstString(referral?.source_type, referral?.sourceType) } : {}),
+    ...(firstString(referral?.source_type, referral?.sourceType) ? { sourceType: firstString(referral?.source_type) } : {}),
   }
   return {
     eventType,
@@ -434,14 +433,15 @@ export function normalizeUazApiEvent(payload: unknown): NormalizedUazApiEvent {
 
 export async function recordUazApiEvent(
   pool: Pool,
+  companyId: string,
   event: NormalizedUazApiEvent,
 ): Promise<boolean> {
   const id = `uazapi_event_${randomUUID()}`
   const result = await pool.query(
-    `insert into whatsapp_events (id, provider, provider_event_id, event_type, payload)
-     values ($1, 'uazapi', $2, $3, $4)
-     on conflict (provider, provider_event_id) where provider_event_id is not null do nothing`,
-    [id, event.providerEventId, event.eventType, event.payload],
+    `insert into whatsapp_events (id, company_id, provider, provider_event_id, event_type, payload)
+     values ($1, $2, 'uazapi', $3, $4, $5)
+     on conflict (company_id, provider, provider_event_id) where provider_event_id is not null do nothing`,
+    [id, companyId, event.providerEventId, event.eventType, event.payload],
   )
   return result.rowCount === 1
 }
@@ -449,7 +449,7 @@ export async function recordUazApiEvent(
 export function publicUazApiState(state: WhatsAppState): WhatsAppState {
   return {
     ...state,
-    // QR code and pair code are intentionally returned only to authenticated UI users.
+    // QR code e pair code só chegam a uma sessão autenticada do workspace.
     qrcode: state.qrcode,
     paircode: state.paircode,
   }

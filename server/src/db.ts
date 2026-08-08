@@ -23,6 +23,10 @@ export async function runMigrations(pool: Pool): Promise<void> {
     .sort()
   await pool.query('begin')
   try {
+    // Falha cedo diante de lock concorrente e evita que uma migração fique
+    // presa indefinidamente durante o deploy. Os limites são locais à tx.
+    await pool.query("set local lock_timeout = '5s'")
+    await pool.query("set local statement_timeout = '90s'")
     for (const migrationFile of migrationFiles) {
       await pool.query(await readFile(resolve(migrationsDir, migrationFile), 'utf8'))
     }

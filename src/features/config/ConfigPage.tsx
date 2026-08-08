@@ -24,7 +24,21 @@ import { useApp } from '../../hooks/useApp'
 import type { ThemeMode } from '../../context/AppContext'
 import { loadAlertTargets, saveAlertTargets } from '../../lib/alerts/targets'
 import { queryKeys } from '../../lib/query/keys'
-import { changePassword, getMetaStatus, syncMetaAds, type MetaStatus } from '../../lib/api/authClient'
+import {
+  addCompanyMember,
+  changePassword,
+  createCompany as createCompanyRequest,
+  getCompanyMembers,
+  getMetaStatus,
+  saveMetaIntegration,
+  saveUazApiIntegration,
+  setActiveCompanyId,
+  syncMetaAds,
+  updateCurrentCompany,
+  type CompanyMember,
+  type CompanyRole,
+  type MetaStatus,
+} from '../../lib/api/authClient'
 
 /** Chaves de override criadas pelo mock client (ver src/lib/api/mockClient.ts). */
 const DEMO_OVERRIDE_KEYS = [
@@ -55,9 +69,10 @@ function syncRange(): { from: string; to: string } {
 
 export default function ConfigPage() {
   const { themeMode, setThemeMode } = useTheme()
-  const { clearReadAlerts } = useApp()
+  const { activeCompany, clearReadAlerts, refreshAuth } = useApp()
   const { toast } = useToast()
   const queryClient = useQueryClient()
+  const activeCompanyId = activeCompany?.id
 
   const [targets, setTargets] = useState(loadAlertTargets)
   const [cplCents, setCplCents] = useState<number | null>(
@@ -79,15 +94,45 @@ export default function ConfigPage() {
   const [metaStatus, setMetaStatus] = useState<MetaStatus | null>(null)
   const [metaBusy, setMetaBusy] = useState(false)
   const [metaError, setMetaError] = useState<string | null>(null)
+  const [companyName, setCompanyName] = useState('')
+  const [newCompanyName, setNewCompanyName] = useState('')
+  const [workspaceBusy, setWorkspaceBusy] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [metaAccountId, setMetaAccountId] = useState('')
+  const [metaDatasetId, setMetaDatasetId] = useState('')
+  const [metaToken, setMetaToken] = useState('')
+  const [integrationBusy, setIntegrationBusy] = useState<'meta' | 'uazapi' | null>(null)
+  const [integrationError, setIntegrationError] = useState<string | null>(null)
+  const [uazApiUrl, setUazApiUrl] = useState('https://api.uazapi.com')
+  const [uazInstanceName, setUazInstanceName] = useState('funiltrack')
+  const [uazToken, setUazToken] = useState('')
+  const [members, setMembers] = useState<CompanyMember[]>([])
+  const [memberEmail, setMemberEmail] = useState('')
+  const [memberRole, setMemberRole] = useState<CompanyRole>('member')
+  const [memberBusy, setMemberBusy] = useState(false)
+  const [memberError, setMemberError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setCompanyName(activeCompany?.name ?? '')
+  }, [activeCompany?.id, activeCompany?.name])
 
   useEffect(() => {
     if (isUsingMocks) return
     void getMetaStatus()
-      .then(setMetaStatus)
+      .then((status) => {
+        setMetaStatus(status)
+        setMetaAccountId(status.adAccountId ?? '')
+        setMetaDatasetId(status.datasetId ?? '')
+      })
       .catch((error: unknown) => {
         setMetaError(error instanceof Error ? error.message : 'Não foi possível consultar a Meta.')
       })
-  }, [])
+  }, [activeCompany?.id])
+
+  useEffect(() => {
+    if (isUsingMocks || !activeCompanyId) return
+    void getCompanyMembers().then(setMembers).catch(() => setMembers([]))
+  }, [activeCompanyId])
 
   const runMetaSync = async () => {
     setMetaBusy(true)
@@ -168,6 +213,87 @@ export default function ConfigPage() {
     }
   }
 
+  const saveWorkspace = async () => {
+    setWorkspaceBusy(true)
+    setWorkspaceError(null)
+    try {
+      await updateCurrentCompany(companyName)
+      await refreshAuth()
+      toast('Empresa atualizada.', 'success')
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : 'Não foi possível atualizar a empresa.')
+    } finally {
+      setWorkspaceBusy(false)
+    }
+  }
+
+  const createWorkspace = async () => {
+    setWorkspaceBusy(true)
+    setWorkspaceError(null)
+    try {
+      const company = await createCompanyRequest(newCompanyName)
+      await refreshAuth()
+      setActiveCompanyId(company.id)
+      window.location.assign('/onboarding')
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : 'Não foi possível criar a empresa.')
+    } finally {
+      setWorkspaceBusy(false)
+    }
+  }
+
+  const saveMeta = async () => {
+    setIntegrationBusy('meta')
+    setIntegrationError(null)
+    try {
+      const status = await saveMetaIntegration({
+        adAccountId: metaAccountId,
+        ...(metaDatasetId.trim() ? { datasetId: metaDatasetId } : {}),
+        ...(metaToken.trim() ? { accessToken: metaToken } : {}),
+      })
+      setMetaStatus(status)
+      setMetaToken('')
+      toast('Credenciais Meta salvas neste workspace.', 'success')
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : 'Não foi possível salvar a Meta.')
+    } finally {
+      setIntegrationBusy(null)
+    }
+  }
+
+  const saveUazApi = async () => {
+    setIntegrationBusy('uazapi')
+    setIntegrationError(null)
+    try {
+      await saveUazApiIntegration({
+        baseUrl: uazApiUrl,
+        instanceName: uazInstanceName,
+        ...(uazToken.trim() ? { token: uazToken } : {}),
+      })
+      setUazToken('')
+      toast('Credenciais UazAPI salvas neste workspace.', 'success')
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : 'Não foi possível salvar a UazAPI.')
+    } finally {
+      setIntegrationBusy(null)
+    }
+  }
+
+  const inviteMember = async () => {
+    setMemberBusy(true)
+    setMemberError(null)
+    try {
+      const member = await addCompanyMember(memberEmail, memberRole)
+      setMembers((previous) => [...previous.filter((item) => item.id !== member.id), member])
+      setMemberEmail('')
+      toast('Acesso do membro atualizado.', 'success')
+    } catch (error) {
+      setMemberError(error instanceof Error ? error.message : 'Não foi possível adicionar o membro.')
+    } finally {
+      setMemberBusy(false)
+    }
+  }
+
   return (
     <PageFrame width="default" className="space-y-4 lg:space-y-6">
       <div>
@@ -180,6 +306,113 @@ export default function ConfigPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2 lg:gap-6">
+      {!isUsingMocks && (
+        <Card
+          neon
+          className="lg:col-span-2"
+          title="Empresa e workspaces"
+          subtitle="Cada empresa possui dados, membros e credenciais de integração totalmente separados."
+        >
+          <div className="grid gap-5 lg:grid-cols-2">
+            <div className="space-y-3">
+              <Input
+                label="Nome da empresa atual"
+                value={companyName}
+                onChange={(event) => setCompanyName(event.target.value)}
+                disabled={activeCompany?.role !== 'owner'}
+              />
+              <Button variant="secondary" onClick={() => void saveWorkspace()} disabled={workspaceBusy || activeCompany?.role !== 'owner'}>
+                {workspaceBusy ? 'Salvando…' : 'Salvar empresa'}
+              </Button>
+              {activeCompany?.role !== 'owner' && <p className="text-xs text-text-muted">Somente o owner pode alterar o nome da empresa.</p>}
+            </div>
+            <div className="space-y-3 rounded-xl border border-border/70 bg-surface-2/40 p-3">
+              <p className="text-sm font-semibold text-text">Adicionar outra empresa</p>
+              <Input
+                label="Nome do novo workspace"
+                placeholder="Ex.: Cliente ACME"
+                value={newCompanyName}
+                onChange={(event) => setNewCompanyName(event.target.value)}
+              />
+              <Button onClick={() => void createWorkspace()} disabled={workspaceBusy || newCompanyName.trim().length < 2}>
+                {workspaceBusy ? 'Criando…' : 'Criar workspace'}
+              </Button>
+            </div>
+          </div>
+          {workspaceError && <p className="mt-3 text-xs text-danger">{workspaceError}</p>}
+        </Card>
+      )}
+
+      {!isUsingMocks && (
+        <Card
+          neon
+          className="lg:col-span-2"
+          title="Ativos e credenciais deste workspace"
+          subtitle="Os tokens são enviados por HTTPS, criptografados no servidor e nunca voltam para o navegador."
+        >
+          <div className="grid gap-5 lg:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-border/70 bg-surface-2/40 p-3">
+              <div>
+                <p className="text-sm font-semibold text-text">Meta Ads</p>
+                <p className="mt-0.5 text-xs text-text-muted">Use a conta, Pixel/Dataset e token com permissão do cliente.</p>
+              </div>
+              <Input label="Conta de anúncios" placeholder="act_123456789" value={metaAccountId} onChange={(event) => setMetaAccountId(event.target.value)} />
+              <Input label="Pixel ou Dataset" placeholder="1715250949780818" value={metaDatasetId} onChange={(event) => setMetaDatasetId(event.target.value)} />
+              <Input label="Novo token Meta (opcional ao atualizar)" type="password" autoComplete="off" value={metaToken} onChange={(event) => setMetaToken(event.target.value)} />
+              <Button fullWidth variant="secondary" onClick={() => void saveMeta()} disabled={integrationBusy !== null || activeCompany?.role === 'member' || !metaAccountId.trim()}>
+                {integrationBusy === 'meta' ? 'Salvando Meta…' : 'Salvar Meta Ads'}
+              </Button>
+            </div>
+            <div className="space-y-3 rounded-xl border border-border/70 bg-surface-2/40 p-3">
+              <div>
+                <p className="text-sm font-semibold text-text">UazAPI / WhatsApp</p>
+                <p className="mt-0.5 text-xs text-text-muted">Use uma instância exclusiva por empresa e conecte o QR Code na aba WhatsApp.</p>
+              </div>
+              <Input label="URL da UazAPI" placeholder="https://empresa.uazapi.com" value={uazApiUrl} onChange={(event) => setUazApiUrl(event.target.value)} />
+              <Input label="Nome da instância" placeholder="cliente-acme" value={uazInstanceName} onChange={(event) => setUazInstanceName(event.target.value)} />
+              <Input label="Novo token UazAPI (opcional ao atualizar)" type="password" autoComplete="off" value={uazToken} onChange={(event) => setUazToken(event.target.value)} />
+              <Button fullWidth variant="secondary" onClick={() => void saveUazApi()} disabled={integrationBusy !== null || activeCompany?.role === 'member' || !uazApiUrl.trim() || !uazInstanceName.trim()}>
+                {integrationBusy === 'uazapi' ? 'Salvando UazAPI…' : 'Salvar UazAPI'}
+              </Button>
+            </div>
+          </div>
+          {integrationError && <p className="mt-3 text-xs text-danger">{integrationError}</p>}
+        </Card>
+      )}
+
+      {!isUsingMocks && (
+        <Card neon className="lg:col-span-2" title="Equipe da empresa" subtitle="Adicione usuários que já possuam uma conta FunilTrack; o papel vale somente neste workspace.">
+          {activeCompany?.role === 'owner' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_150px_auto] md:items-end">
+                <Input label="E-mail do membro" type="email" placeholder="pessoa@empresa.com" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} />
+                <label className="block text-xs font-medium text-text-muted">
+                  Papel
+                  <select value={memberRole} onChange={(event) => setMemberRole(event.target.value as CompanyRole)} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text">
+                    <option value="member">Membro</option>
+                    <option value="admin">Admin</option>
+                    <option value="owner">Owner</option>
+                  </select>
+                </label>
+                <Button onClick={() => void inviteMember()} disabled={memberBusy || !memberEmail.trim()}>{memberBusy ? 'Salvando…' : 'Adicionar'}</Button>
+              </div>
+              {memberError && <p className="text-xs text-danger">{memberError}</p>}
+              <div className="divide-y divide-border/60 rounded-xl border border-border/70">
+                {members.map((member) => (
+                  <div key={member.id} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
+                    <div className="min-w-0"><p className="truncate font-medium text-text">{member.name}</p><p className="truncate text-xs text-text-muted">{member.email}</p></div>
+                    <span className="rounded-md bg-primary/10 px-2 py-1 text-[11px] font-semibold text-primary">{member.role}</span>
+                  </div>
+                ))}
+                {members.length === 0 && <p className="px-3 py-3 text-xs text-text-muted">Nenhum membro encontrado.</p>}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-text-muted">Somente o owner desta empresa gerencia os membros.</p>
+          )}
+        </Card>
+      )}
+
       {/* Aparência */}
       <Card neon title="Aparência" subtitle="O modo auto acompanha o tema do sistema.">
         <div
@@ -255,7 +488,7 @@ export default function ConfigPage() {
                 <p className="text-xs text-text-muted mt-0.5">
                   {metaStatus?.adsConfigured
                     ? `Conta ${metaStatus.adAccountId ?? 'configurada'}`
-                    : 'Não configurada no ambiente do Coolify'}
+                    : 'Ainda não configurada neste workspace'}
                 </p>
               </div>
               <span className={metaStatus?.adsConfigured ? 'text-xs font-semibold text-accent' : 'text-xs font-semibold text-warning'}>
@@ -263,8 +496,8 @@ export default function ConfigPage() {
               </span>
             </div>
             <p className="text-xs leading-5 text-text-muted">
-              Configure <code>META_ACCESS_TOKEN</code> e <code>META_AD_ACCOUNT_ID</code> no Coolify.
-              Para devolver Lead, QualifiedLead e Purchase à Meta, configure também <code>META_DATASET_ID</code>.
+              Salve acima a conta, o token e o Pixel/Dataset deste cliente.
+              Para devolver Lead, QualifiedLead e Purchase à Meta, informe também o Pixel ou Dataset.
             </p>
             {metaStatus?.lastSyncAt && (
               <p className="text-[11px] text-text-muted">

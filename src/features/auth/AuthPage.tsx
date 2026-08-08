@@ -24,6 +24,7 @@ export default function AuthPage() {
   const { login, register } = useApp()
   const isRegister = location.pathname === '/register'
   const [name, setName] = useState('')
+  const [companyName, setCompanyName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -51,7 +52,7 @@ export default function AuthPage() {
     }
     setBusy(true)
     try {
-      if (isRegister) await register(name, email, password)
+      if (isRegister) await register(name, companyName, email, password)
       else await login(email, password)
       navigate('/', { replace: true })
     } catch (submissionError) {
@@ -102,14 +103,24 @@ export default function AuthPage() {
 
           <form onSubmit={submit} className="space-y-4" noValidate>
             {isRegister && (
-              <Input
-                label="Nome"
-                placeholder="Como podemos chamar você?"
-                autoComplete="name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                required
-              />
+              <>
+                <Input
+                  label="Nome"
+                  placeholder="Como podemos chamar você?"
+                  autoComplete="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  required
+                />
+                <Input
+                  label="Nome da empresa"
+                  placeholder="Ex.: Empresa da Maria"
+                  autoComplete="organization"
+                  value={companyName}
+                  onChange={(event) => setCompanyName(event.target.value)}
+                  required
+                />
+              </>
             )}
             <Input
               label="E-mail"
